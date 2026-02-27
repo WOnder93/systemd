@@ -1063,6 +1063,7 @@ static int parse_argv(int argc, char *argv[]) {
 
                 case ARG_SELINUX_NAMESPACE:
                         arg_selinux_namespace = true;
+                        arg_settings_mask |= SETTING_SELINUX_NAMESPACE;
                         break;
 
                 case ARG_READ_ONLY:
@@ -5114,6 +5115,10 @@ static int merge_settings(Settings *settings, const char *path) {
         if ((arg_settings_mask & SETTING_SUPPRESS_SYNC) == 0 &&
             settings->suppress_sync >= 0)
                 arg_suppress_sync = settings->suppress_sync;
+
+        if ((arg_settings_mask & SETTING_SELINUX_NAMESPACE) == 0 &&
+            settings->selinux_namespace >= 0)
+                arg_selinux_namespace = settings->selinux_namespace;
 
         /* The following properties can only be set through the OCI settings logic, not from the command line, hence we
          * don't consult arg_settings_mask for them. */
