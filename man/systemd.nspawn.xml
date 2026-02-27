@@ -427,6 +427,16 @@
         <xi:include href="version-info.xml" xpointer="v250"/></listitem>
       </varlistentry>
 
+      <varlistentry>
+        <term><varname>SELinuxNamespace=</varname></term>
+
+        <listitem><para>Configures whether to unshare a new SELinux namespace when starting the container.
+        <varname>SELinuxNamespace=yes</varname> is equivalent to the <option>--selinux-namespace</option>
+        command line switch.</para>
+
+        <xi:include href="version-info.xml" xpointer="TODO"/></listitem>
+      </varlistentry>
+
     </variablelist>
   </refsect1>
 

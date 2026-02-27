@@ -44,6 +44,7 @@ Settings *settings_new(void) {
                 .uid_range = UID_INVALID,
 
                 .no_new_privileges = -1,
+                .selinux_namespace = -1,
 
                 .read_only = -1,
                 .volatile_mode = _VOLATILE_MODE_INVALID,

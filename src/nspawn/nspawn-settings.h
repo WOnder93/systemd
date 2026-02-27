@@ -125,9 +125,10 @@ typedef enum SettingsMask {
         SETTING_BIND_USER         = UINT64_C(1) << 31,
         SETTING_BIND_USER_SHELL   = UINT64_C(1) << 32,
         SETTING_SUPPRESS_SYNC     = UINT64_C(1) << 33,
-        SETTING_RLIMIT_FIRST      = UINT64_C(1) << 34, /* we define one bit per resource limit here */
-        SETTING_RLIMIT_LAST       = UINT64_C(1) << (34 + _RLIMIT_MAX - 1),
-        _SETTINGS_MASK_ALL        = (UINT64_C(1) << (34 + _RLIMIT_MAX)) -1,
+        SETTING_SELINUX_NAMESPACE = UINT64_C(1) << 34,
+        SETTING_RLIMIT_FIRST      = UINT64_C(1) << 35, /* we define one bit per resource limit here */
+        SETTING_RLIMIT_LAST       = UINT64_C(1) << (35 + _RLIMIT_MAX - 1),
+        _SETTINGS_MASK_ALL        = (UINT64_C(1) << (35 + _RLIMIT_MAX)) -1,
         _SETTING_FORCE_ENUM_WIDTH = UINT64_MAX
 } SettingsMask;
 
@@ -188,6 +189,7 @@ typedef struct Settings {
         bool link_journal_try;
         TimezoneMode timezone;
         int suppress_sync;
+        int selinux_namespace;
 
         /* [Files] */
         int read_only;
