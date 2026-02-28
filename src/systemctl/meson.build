@@ -36,7 +36,6 @@ systemctl_extract_sources = files(
         'systemctl-daemon-reload.c',
         'systemctl-logind.c',
         'systemctl-start-unit.c',
-        'systemctl-sysv-compat.c',
         'systemctl-util.c',
         'systemctl.c',
 )
@@ -52,13 +51,11 @@ executables += [
         executable_template + {
                 'name' : 'systemctl',
                 'public' : true,
-                'sources' : systemctl_sources + systemctl_extract_sources,
+                'sources' : systemctl_sources,
                 'extract' : systemctl_extract_sources,
                 'link_with' : systemctl_link_with,
                 'dependencies' : [
-                        libcap,
                         liblz4_cflags,
-                        libselinux,
                         libxz_cflags,
                         libzstd_cflags,
                         threads,

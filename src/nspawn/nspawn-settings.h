@@ -6,9 +6,9 @@
 #include "capability-util.h"
 #include "conf-parser-forward.h"
 #include "cpu-set-util.h"
-#include "forward.h"
 #include "rlimit-util.h"
 #include "seccomp-util.h"
+#include "shared-forward.h"
 #include "volatile-util.h"
 
 typedef struct CustomMount CustomMount;
@@ -82,6 +82,7 @@ typedef enum TimezoneMode {
 } TimezoneMode;
 
 typedef enum ConsoleMode {
+        CONSOLE_AUTOPIPE,
         CONSOLE_INTERACTIVE,
         CONSOLE_READ_ONLY,
         CONSOLE_PASSIVE,
@@ -174,6 +175,7 @@ typedef struct Settings {
         char *pivot_root_old;
         UserNamespaceMode userns_mode;
         uid_t uid_shift, uid_range;
+        unsigned delegate_container_ranges;
         int notify_ready;
         char **syscall_allow_list;
         char **syscall_deny_list;
@@ -248,7 +250,7 @@ int settings_allocate_properties(Settings *s);
 
 DEFINE_TRIVIAL_CLEANUP_FUNC(Settings*, settings_free);
 
-const struct ConfigPerfItem* nspawn_gperf_lookup(const char *key, GPERF_LEN_TYPE length);
+const struct ConfigPerfItem* nspawn_gperf_lookup(const char *str, GPERF_LEN_TYPE length);
 
 CONFIG_PARSER_PROTOTYPE(config_parse_capability);
 CONFIG_PARSER_PROTOTYPE(config_parse_expose_port);
@@ -276,14 +278,13 @@ CONFIG_PARSER_PROTOTYPE(config_parse_userns_ownership);
 CONFIG_PARSER_PROTOTYPE(config_parse_bind_user);
 CONFIG_PARSER_PROTOTYPE(config_parse_bind_user_shell);
 
-const char* resolv_conf_mode_to_string(ResolvConfMode a) _const_;
-ResolvConfMode resolv_conf_mode_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(resolv_conf_mode, ResolvConfMode);
 
-const char* timezone_mode_to_string(TimezoneMode a) _const_;
-TimezoneMode timezone_mode_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(timezone_mode, TimezoneMode);
 
-const char* user_namespace_ownership_to_string(UserNamespaceOwnership a) _const_;
-UserNamespaceOwnership user_namespace_ownership_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(console_mode, ConsoleMode);
+
+DECLARE_STRING_TABLE_LOOKUP(user_namespace_ownership, UserNamespaceOwnership);
 
 int parse_link_journal(const char *s, LinkJournal *ret_mode, bool *ret_try);
 

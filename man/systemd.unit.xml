@@ -277,6 +277,10 @@
     effective way to fully disable a unit, making it impossible to
     start it even manually.</para>
 
+    <para>Files (including directories) with names that match certain patterns are
+    generally ignored. This includes names that start with a <literal>.</literal> or
+    end with a <literal>.ignore</literal>.</para>
+
     <para>The unit file format is covered by the
     <ulink url="https://systemd.io/PORTABILITY_AND_STABILITY/">Interface
     Portability and Stability Promise</ulink>.</para>
@@ -717,9 +721,10 @@
         <term><varname>BindsTo=</varname></term>
 
         <listitem><para>Configures requirement dependencies, very similar in style to
-        <varname>Requires=</varname>. However, this dependency type is stronger: in addition to the effect of
-        <varname>Requires=</varname> it declares that if the unit bound to is stopped, this unit will be stopped
-        too. This means a unit bound to another unit that suddenly enters inactive state will be stopped too.
+        <varname>Requires=</varname>. However, this dependency type is stronger: in addition to the effects of
+        <varname>Requires=</varname>, which already stops (or restarts) the configuring unit when a listed unit is
+        explicitly stopped (or restarted), it also does so when a listed unit stops unexpectedly (which includes when it
+        fails).
         Units can suddenly, unexpectedly enter inactive state for different reasons: the main process of a service unit
         might terminate on its own choice, the backing device of a device unit might be unplugged or the mount point of
         a mount unit might be unmounted without involvement of the system and service manager.</para>
@@ -952,8 +957,11 @@
         <literal>isolate</literal>,
         <literal>flush</literal>,
         <literal>ignore-dependencies</literal> or
-        <literal>ignore-requirements</literal>. Defaults to
-        <literal>replace</literal>. Specifies how the units listed in
+        <literal>ignore-requirements</literal>.
+        <literal>OnFailureJobMode=</literal> defaults to
+        <literal>replace</literal>,
+        <literal>OnSuccessJobMode=</literal> defaults to
+        <literal>fail</literal>. Specifies how the units listed in
         <varname>OnSuccess=</varname>/<varname>OnFailure=</varname> will be enqueued. See
         <citerefentry><refentrytitle>systemctl</refentrytitle><manvolnum>1</manvolnum></citerefentry>'s
         <option>--job-mode=</option> option for details on the
@@ -1586,7 +1594,8 @@
                 </row>
                 <row>
                   <entry>tpm2</entry>
-                  <entry>Trusted Platform Module 2.0 (TPM2)</entry>
+                  <entry>Trusted Platform Module 2.0 (TPM2) (with full UEFI support, including the TCG PC Client
+                  Platform Firmware Profile)</entry>
                 </row>
                 <row>
                   <entry>cvm</entry>
@@ -1785,6 +1794,17 @@
           detected. It is not detected whether the file system backing the loopback block device is encrypted.</para>
 
           <xi:include href="version-info.xml" xpointer="v246"/>
+          </listitem>
+        </varlistentry>
+
+        <varlistentry>
+          <term><varname>ConditionPathIsSocket=</varname></term>
+
+          <listitem><para><varname>ConditionPathIsSocket=</varname> is similar to
+          <varname>ConditionPathExists=</varname> but verifies that a certain path exists and is a
+          socket.</para>
+
+          <xi:include href="version-info.xml" xpointer="v260"/>
           </listitem>
         </varlistentry>
 
@@ -2043,6 +2063,7 @@
           <term><varname>AssertPathIsMountPoint=</varname></term>
           <term><varname>AssertPathIsReadWrite=</varname></term>
           <term><varname>AssertPathIsEncrypted=</varname></term>
+          <term><varname>AssertPathIsSocket=</varname></term>
           <term><varname>AssertDirectoryNotEmpty=</varname></term>
           <term><varname>AssertFileNotEmpty=</varname></term>
           <term><varname>AssertFileIsExecutable=</varname></term>

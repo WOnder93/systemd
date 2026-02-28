@@ -512,10 +512,16 @@ int network_load_one(Manager *manager, OrderedHashmap **networks, const char *fi
 
                 .ipoib_mode = _IP_OVER_INFINIBAND_MODE_INVALID,
                 .ipoib_umcast = -1,
+
+                .mm_use_gateway = -1,
         };
 
-        r = config_parse_many(
-                        STRV_MAKE_CONST(filename), NETWORK_DIRS, dropin_dirname, /* root = */ NULL,
+        r = config_parse_many_full(
+                        STRV_MAKE_CONST(filename),
+                        NETWORK_DIRS,
+                        dropin_dirname,
+                        /* root= */ NULL,
+                        /* root_fd= */ -EBADF,
                         "Match\0"
                         "Link\0"
                         "SR-IOV\0"
@@ -547,6 +553,7 @@ int network_load_one(Manager *manager, OrderedHashmap **networks, const char *fi
                         "LLDP\0"
                         "TrafficControlQueueingDiscipline\0"
                         "CAN\0"
+                        "ModemManager\0"
                         "QDisc\0"
                         "BFIFO\0"
                         "CAKE\0"
@@ -574,7 +581,8 @@ int network_load_one(Manager *manager, OrderedHashmap **networks, const char *fi
                         "StochasticFairnessQueueing\0"
                         "TokenBucketFilter\0"
                         "TrivialLinkEqualizer\0",
-                        config_item_perf_lookup, network_network_gperf_lookup,
+                        config_item_perf_lookup,
+                        network_network_gperf_lookup,
                         CONFIG_PARSE_WARN,
                         network,
                         &network->stats_by_path,
@@ -600,7 +608,7 @@ int network_load_one(Manager *manager, OrderedHashmap **networks, const char *fi
                 return log_warning_errno(r, "%s: Failed to store configuration into hashmap: %m", filename);
 
         TAKE_PTR(network);
-        log_syntax(/* unit = */ NULL, LOG_DEBUG, filename, /* config_line = */ 0, /* error = */ 0, "Successfully loaded.");
+        log_syntax(/* unit= */ NULL, LOG_DEBUG, filename, /* config_line= */ 0, /* error= */ 0, "Successfully loaded.");
         return 0;
 }
 
@@ -612,7 +620,7 @@ int network_load(Manager *manager, OrderedHashmap **ret) {
         assert(manager);
         assert(ret);
 
-        r = conf_files_list_strv(&files, ".network", NULL, 0, NETWORK_DIRS);
+        r = conf_files_list_strv(&files, ".network", /* root= */ NULL, CONF_FILES_WARN, NETWORK_DIRS);
         if (r < 0)
                 return log_error_errno(r, "Failed to enumerate network files: %m");
 
@@ -755,11 +763,13 @@ static Network *network_free(Network *network) {
         free(network->dhcp_server_boot_server_name);
         free(network->dhcp_server_boot_filename);
         free(network->dhcp_server_timezone);
+        free(network->dhcp_server_domain);
         free(network->dhcp_server_uplink_name);
         for (sd_dhcp_lease_server_type_t t = 0; t < _SD_DHCP_LEASE_SERVER_TYPE_MAX; t++)
                 free(network->dhcp_server_emit[t].addresses);
         ordered_hashmap_free(network->dhcp_server_send_options);
         ordered_hashmap_free(network->dhcp_server_send_vendor_options);
+        free(network->dhcp_server_local_lease_domain);
 
         /* DHCP client */
         free(network->dhcp_vendor_class_identifier);
@@ -839,6 +849,9 @@ static Network *network_free(Network *network) {
         ordered_hashmap_free(network->sr_iov_by_section);
         hashmap_free(network->qdiscs_by_section);
         hashmap_free(network->tclasses_by_section);
+
+        /* ModemManager */
+        strv_free(network->mm_simple_connect_props);
 
         return mfree(network);
 }

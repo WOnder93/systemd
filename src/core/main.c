@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <linux/oom.h>
+#include <linux/vt.h>
 #include <stdlib.h>
 #include <sys/mount.h>
 #include <sys/prctl.h>
@@ -58,6 +59,7 @@
 #include "killall.h"
 #include "kmod-setup.h"
 #include "label-util.h"
+#include "libmount-util.h"
 #include "limits-util.h"
 #include "load-fragment.h"
 #include "log.h"
@@ -100,6 +102,7 @@
 #include "umask-util.h"
 #include "unit-name.h"
 #include "user-util.h"
+#include "utf8.h"
 #include "version.h"
 #include "virt.h"
 #include "watchdog.h"
@@ -253,6 +256,22 @@ static int console_setup(void) {
         save_console_winsize_in_environment(tty_fd);
 
         return 0;
+}
+
+static int parse_timeout(const char *value, usec_t *ret) {
+        int r = 0;
+
+        assert(value);
+        assert(ret);
+
+        if (streq(value, "default"))
+                *ret = USEC_INFINITY;
+        else if (streq(value, "off"))
+                *ret = 0;
+        else
+                r = parse_sec(value, ret);
+
+        return r;
 }
 
 static int parse_proc_cmdline_item(const char *key, const char *value, void *data) {
@@ -456,16 +475,10 @@ static int parse_proc_cmdline_item(const char *key, const char *value, void *dat
                 if (proc_cmdline_value_missing(key, value))
                         return 0;
 
-                if (streq(value, "default"))
-                        arg_runtime_watchdog = USEC_INFINITY;
-                else if (streq(value, "off"))
-                        arg_runtime_watchdog = 0;
-                else {
-                        r = parse_sec(value, &arg_runtime_watchdog);
-                        if (r < 0) {
-                                log_warning_errno(r, "Failed to parse systemd.watchdog_sec= argument '%s', ignoring: %m", value);
-                                return 0;
-                        }
+                r = parse_timeout(value, &arg_runtime_watchdog);
+                if (r < 0) {
+                        log_warning_errno(r, "Failed to parse systemd.watchdog_sec= argument '%s', ignoring: %m", value);
+                        return 0;
                 }
 
                 arg_kexec_watchdog = arg_reboot_watchdog = arg_runtime_watchdog;
@@ -475,16 +488,10 @@ static int parse_proc_cmdline_item(const char *key, const char *value, void *dat
                 if (proc_cmdline_value_missing(key, value))
                         return 0;
 
-                if (streq(value, "default"))
-                        arg_pretimeout_watchdog = USEC_INFINITY;
-                else if (streq(value, "off"))
-                        arg_pretimeout_watchdog = 0;
-                else {
-                        r = parse_sec(value, &arg_pretimeout_watchdog);
-                        if (r < 0) {
-                                log_warning_errno(r, "Failed to parse systemd.watchdog_pre_sec= argument '%s', ignoring: %m", value);
-                                return 0;
-                        }
+                r = parse_timeout(value, &arg_pretimeout_watchdog);
+                if (r < 0) {
+                        log_warning_errno(r, "Failed to parse systemd.watchdog_pre_sec= argument '%s', ignoring: %m", value);
+                        return 0;
                 }
 
         } else if (proc_cmdline_key_streq(key, "systemd.watchdog_pretimeout_governor")) {
@@ -835,11 +842,10 @@ static int parse_config_file(void) {
                                 (const char* const*) files,
                                 (const char* const*) dirs,
                                 "user.conf.d",
-                                /* root = */ NULL,
                                 "Manager\0",
                                 config_item_table_lookup, items,
                                 CONFIG_PARSE_WARN,
-                                NULL, NULL, NULL);
+                                /* userdata= */ NULL);
         }
 
         /* Traditionally "0" was used to turn off the default unit timeouts. Fix this up so that we use
@@ -1383,37 +1389,79 @@ static int enforce_syscall_archs(Set *archs) {
 }
 
 static int os_release_status(void) {
-        _cleanup_free_ char *pretty_name = NULL, *name = NULL, *version = NULL,
-                            *ansi_color = NULL, *support_end = NULL;
+        _cleanup_free_ char *pretty_name = NULL, *fancy_name = NULL,
+                *name = NULL, *version = NULL, *ansi_color = NULL, *support_end = NULL, *codename = NULL;
         int r;
 
         r = parse_os_release(NULL,
-                             "PRETTY_NAME", &pretty_name,
-                             "NAME",        &name,
-                             "VERSION",     &version,
-                             "ANSI_COLOR",  &ansi_color,
-                             "SUPPORT_END", &support_end);
+                             "PRETTY_NAME",      &pretty_name,
+                             "FANCY_NAME",       &fancy_name,
+                             "NAME",             &name,
+                             "VERSION",          &version,
+                             "VERSION_CODENAME", &codename,
+                             "ANSI_COLOR",       &ansi_color,
+                             "SUPPORT_END",      &support_end);
         if (r < 0)
                 return log_full_errno(r == -ENOENT ? LOG_DEBUG : LOG_WARNING, r,
                                       "Failed to read os-release file, ignoring: %m");
 
         const char *label = os_release_pretty_name(pretty_name, name);
-        const char *color = empty_to_null(ansi_color) ?: "1";
 
         if (show_status_on(arg_show_status)) {
+                const char *color = empty_to_null(ansi_color) ?: "1";
+
+                /* The fancy name may contain emoji characters and ANSI sequences. Don't use it if our locale
+                 * doesn't allow that, or ANSI sequences are off, or if it is empty. */
+
+                if (!isempty(fancy_name)) {
+                        _cleanup_free_ char *unescaped = NULL;
+
+                        /* Undo one level of C-style unescaping for this one */
+                        ssize_t l = cunescape(fancy_name, /* flags= */ 0, &unescaped);
+                        if (l < 0) {
+                                log_debug_errno(l, "Failed to unescape FANCY_NAME=, ignoring: %m");
+                                fancy_name = mfree(fancy_name);
+                        } else if (!utf8_is_valid(fancy_name)) {
+                                log_debug("Unescaped FANCY_NAME= contains invalid UTF-8, ignoring.");
+                                fancy_name = mfree(fancy_name);
+                        } else {
+                                free_and_replace(fancy_name, unescaped);
+
+                                /* FANCY_NAME= does not contain version/codename info (unlike PRETTY_NAME=),
+                                 * but in this context it makes sense to show them if defined, hence append
+                                 * them here. */
+                                if (version && !strextend(&fancy_name, " ", version))
+                                        return log_oom();
+
+                                if (codename && !strextend(&fancy_name, " (", codename, ")"))
+                                        return log_oom();
+                        }
+                }
+
+                if (isempty(fancy_name) ||
+                    (!emoji_enabled() && !ascii_is_valid(fancy_name)) ||
+                    !log_get_show_color())
+                        fancy_name = mfree(fancy_name);
+
+                if (!fancy_name && log_get_show_color()) {
+                        fancy_name = strjoin("\x1B[", color, "m", label);
+                        if (!fancy_name)
+                                return log_oom();
+                }
+
                 if (in_initrd()) {
                         if (log_get_show_color())
                                 status_printf(NULL, 0,
-                                              ANSI_HIGHLIGHT "Booting initrd of " ANSI_NORMAL "\x1B[%sm%s" ANSI_NORMAL ANSI_HIGHLIGHT "." ANSI_NORMAL,
-                                              color, label);
+                                              ANSI_HIGHLIGHT "Booting initrd of " ANSI_NORMAL "%s" ANSI_NORMAL ANSI_HIGHLIGHT "." ANSI_NORMAL,
+                                              fancy_name);
                         else
                                 status_printf(NULL, 0,
                                               "Booting initrd of %s...", label);
                 } else {
                         if (log_get_show_color())
                                 status_printf(NULL, 0,
-                                              "\n" ANSI_HIGHLIGHT "Welcome to " ANSI_NORMAL "\x1B[%sm%s" ANSI_NORMAL ANSI_HIGHLIGHT "!" ANSI_NORMAL "\n",
-                                              color, label);
+                                              "\n" ANSI_HIGHLIGHT "Welcome to " ANSI_NORMAL "%s" ANSI_NORMAL ANSI_HIGHLIGHT "!" ANSI_NORMAL "\n",
+                                              fancy_name);
                         else
                                 status_printf(NULL, 0,
                                               "\nWelcome to %s!\n",
@@ -1421,7 +1469,7 @@ static int os_release_status(void) {
                 }
         }
 
-        if (support_end && os_release_support_ended(support_end, /* quiet = */ false, /* ret_eol = */ NULL) > 0)
+        if (support_end && os_release_support_ended(support_end, /* quiet= */ false, /* ret_eol= */ NULL) > 0)
                 /* pretty_name may include the version already, so we'll print the version only if we
                  * have it and we're not using pretty_name. */
                 status_printf(ANSI_HIGHLIGHT_RED "  !!  " ANSI_NORMAL, 0,
@@ -1927,6 +1975,32 @@ static void finish_remaining_processes(ManagerObjective objective) {
                 broadcast_signal(SIGKILL, /* wait_for_exit= */ false, /* send_sighup= */ false, arg_defaults.timeout_stop_usec);
 }
 
+static void reduce_vt(ManagerObjective objective) {
+        int r;
+
+        if (objective != MANAGER_SOFT_REBOOT)
+                return;
+
+        /* Switches back to VT 1, and releases all other VTs, in an attempt to return to a situation similar
+         * to how it was during the original kernel initialization. This is important because if some random
+         * TTY is in foreground, /dev/console will end up pointing to it, where the future init system will
+         * then write its status output to, but where it probably shouldn't be writing to. */
+
+        r = chvt(1);
+        if (r < 0)
+                log_debug_errno(r, "Failed to switch to VT TTY 1, ignoring: %m");
+
+        _cleanup_close_ int tty0_fd = open_terminal("/dev/tty0", O_RDWR|O_NOCTTY|O_CLOEXEC|O_NONBLOCK);
+        if (tty0_fd < 0)
+                return (void) log_debug_errno(tty0_fd, "Failed to open '/dev/tty0', ignoring: %m");
+
+        for (int ttynr = 2; ttynr <= VTNR_MAX; ttynr++)
+                if (ioctl(tty0_fd, VT_DISALLOCATE, ttynr) < 0)
+                        log_debug_errno(errno, "Failed to disallocate VT TTY %i, ignoring: %m", ttynr);
+                else
+                        log_debug("Successfully disallocated VT TTY %i.", ttynr);
+}
+
 static int do_reexecute(
                 ManagerObjective objective,
                 int argc,
@@ -1966,19 +2040,19 @@ static int do_reexecute(
                 /* If we're supposed to switch root, preemptively check the existence of a usable init.
                  * Otherwise the system might end up in a completely undebuggable state afterwards. */
                 if (switch_root_init) {
-                        r = chase_and_access(switch_root_init, switch_root_dir, CHASE_PREFIX_ROOT, X_OK, /* ret_path = */ NULL);
+                        r = chase_and_access(switch_root_init, switch_root_dir, CHASE_PREFIX_ROOT, X_OK, /* ret_path= */ NULL);
                         if (r < 0)
                                 log_warning_errno(r, "Failed to chase configured init %s/%s: %m",
                                                   switch_root_dir, switch_root_init);
                 } else {
-                        r = chase_and_access(SYSTEMD_BINARY_PATH, switch_root_dir, CHASE_PREFIX_ROOT, X_OK, /* ret_path = */ NULL);
+                        r = chase_and_access(SYSTEMD_BINARY_PATH, switch_root_dir, CHASE_PREFIX_ROOT, X_OK, /* ret_path= */ NULL);
                         if (r < 0)
                                 log_debug_errno(r, "Failed to chase our own binary %s/%s: %m",
                                                 switch_root_dir, SYSTEMD_BINARY_PATH);
                 }
 
                 if (r < 0) {
-                        r = chase_and_access("/sbin/init", switch_root_dir, CHASE_PREFIX_ROOT, X_OK, /* ret_path = */ NULL);
+                        r = chase_and_access("/sbin/init", switch_root_dir, CHASE_PREFIX_ROOT, X_OK, /* ret_path= */ NULL);
                         if (r < 0) {
                                 *ret_error_message = "Switch root target contains no usable init";
                                 return log_error_errno(r, "Failed to chase %s/sbin/init", switch_root_dir);
@@ -1994,6 +2068,7 @@ static int do_reexecute(
                 (void) setrlimit(RLIMIT_MEMLOCK, saved_rlimit_memlock);
 
         finish_remaining_processes(objective);
+        reduce_vt(objective);
 
         if (switch_root_dir) {
                 r = switch_root(/* new_root= */ switch_root_dir,
@@ -2322,7 +2397,7 @@ static void log_execution_mode(bool *ret_first_boot) {
                         /* Let's check whether we are in first boot. First, check if an override was
                          * specified on the kernel command line. If yes, we honour that. */
 
-                        r = proc_cmdline_get_bool("systemd.condition_first_boot", /* flags = */ 0, &first_boot);
+                        r = proc_cmdline_get_bool("systemd.condition_first_boot", /* flags= */ 0, &first_boot);
                         if (r < 0)
                                 log_debug_errno(r, "Failed to parse systemd.condition_first_boot= kernel command line argument, ignoring: %m");
 
@@ -2414,7 +2489,7 @@ static int initialize_runtime(
 
                 if (!skip_setup) {
                         /* Check that /usr/ is either on the same file system as / or mounted already. */
-                        if (dir_is_empty("/usr", /* ignore_hidden_or_backup = */ true) > 0) {
+                        if (dir_is_empty("/usr", /* ignore_hidden_or_backup= */ true) > 0) {
                                 *ret_error_message = "Refusing to run in unsupported environment where /usr/ is not populated";
                                 return -ENOEXEC;
                         }
@@ -2425,11 +2500,11 @@ static int initialize_runtime(
                         (void) import_credentials();
 
                         (void) os_release_status();
-                        (void) machine_id_setup(/* root = */ NULL, arg_machine_id,
+                        (void) machine_id_setup(/* root= */ NULL, arg_machine_id,
                                                 (first_boot ? MACHINE_ID_SETUP_FORCE_TRANSIENT : 0) |
                                                 (arg_machine_id_from_firmware ? MACHINE_ID_SETUP_FORCE_FIRMWARE : 0),
-                                                /* ret = */ NULL);
-                        (void) hostname_setup(/* really = */ true);
+                                                /* ret= */ NULL);
+                        (void) hostname_setup(/* really= */ true);
                         (void) loopback_setup();
 
                         bump_unix_max_dgram_qlen();
@@ -2607,12 +2682,10 @@ static int do_queue_default_job(
                 return log_struct_errno(LOG_EMERG, r,
                                         LOG_MESSAGE("Failed to isolate default target: %s", bus_error_message(&error, r)),
                                         LOG_MESSAGE_ID(SD_MESSAGE_CORE_ISOLATE_TARGET_FAILED_STR));
-        } else
-                log_info("Queued %s job for default target %s.",
-                         job_type_to_string(job->type),
-                         unit_status_string(job->unit, NULL));
+        }
 
-        m->default_unit_job_id = job->id;
+        log_info("Queued %s job for default target %s.",
+                 job_type_to_string(job->type), unit_status_string(job->unit, NULL));
 
         return 0;
 }
@@ -2736,7 +2809,7 @@ static void reset_arguments(void) {
         arg_default_environment = strv_free(arg_default_environment);
         arg_manager_environment = strv_free(arg_manager_environment);
 
-        arg_capability_bounding_set = CAP_MASK_UNSET;
+        arg_capability_bounding_set = CAP_MASK_ALL;
         arg_no_new_privs = false;
         arg_protect_system = -1;
         arg_timer_slack_nsec = NSEC_INFINITY;
@@ -2777,7 +2850,7 @@ static void determine_default_oom_score_adjust(void) {
                 return (void) log_warning_errno(r, "Failed to determine current OOM score adjustment value, ignoring: %m");
 
         assert_cc(100 <= OOM_SCORE_ADJ_MAX);
-        b = a >= OOM_SCORE_ADJ_MAX - 100 ? OOM_SCORE_ADJ_MAX : a + 100;
+        b = saturate_add(a, 100, OOM_SCORE_ADJ_MAX);
 
         if (a == b)
                 return;
@@ -2806,25 +2879,23 @@ static int parse_configuration(const struct rlimit *saved_rlimit_nofile,
                         log_warning_errno(r, "Failed to parse kernel command line, ignoring: %m");
         }
 
-        /* Initialize some default rlimits for services if they haven't been configured */
-        fallback_rlimit_nofile(saved_rlimit_nofile);
-        fallback_rlimit_memlock(saved_rlimit_memlock);
-
-        /* Note that this also parses bits from the kernel command line, including "debug". */
-        log_parse_environment();
-
-        /* Initialize the show status setting if it hasn't been set explicitly yet */
+        /* Initialize the show status setting if it hasn't been explicitly set yet */
         if (arg_show_status == _SHOW_STATUS_INVALID)
                 arg_show_status = SHOW_STATUS_YES;
-
-        /* Slightly raise the OOM score for our services if we are running for unprivileged users. */
-        determine_default_oom_score_adjust();
 
         /* Push variables into the manager environment block */
         setenv_manager_environment();
 
-        /* Parse log environment variables again to take into account any new environment variables. */
+        /* Parse log environment variables to take into account any new environment variables.
+         * Note that this also parses bits from the kernel command line, including "debug". */
         log_parse_environment();
+
+        /* Initialize some default rlimits for services if they haven't been configured */
+        fallback_rlimit_nofile(saved_rlimit_nofile);
+        fallback_rlimit_memlock(saved_rlimit_memlock);
+
+        /* Slightly raise the OOM score for our services if we are running for unprivileged users. */
+        determine_default_oom_score_adjust();
 
         return 0;
 }
@@ -3295,6 +3366,13 @@ int main(int argc, char *argv[]) {
                                    "  systemd.unified_cgroup_hierarchy=0");
 
                 error_message = "Detected unsupported legacy cgroup hierarchy, refusing execution";
+                goto finish;
+        }
+
+        /* Building without libmount is allowed, but if it is compiled in, then we must be able to load it */
+        r = dlopen_libmount();
+        if (r < 0 && !ERRNO_IS_NEG_NOT_SUPPORTED(r)) {
+                error_message = "Failed to load libmount.so";
                 goto finish;
         }
 

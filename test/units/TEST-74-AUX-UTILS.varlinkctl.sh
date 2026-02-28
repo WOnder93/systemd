@@ -37,6 +37,10 @@ varlinkctl introspect -j /run/systemd/journal/io.systemd.journal | jq --seq .
 varlinkctl introspect /run/systemd/journal/io.systemd.journal io.systemd.Journal
 varlinkctl introspect -j /run/systemd/journal/io.systemd.journal io.systemd.Journal | jq .
 
+varlinkctl list-registry
+varlinkctl list-registry -j | jq .
+varlinkctl list-registry | grep io.systemd.Manager
+
 if command -v userdbctl >/dev/null; then
     systemctl start systemd-userdbd
     varlinkctl call /run/systemd/userdb/io.systemd.Multiplexer io.systemd.UserDatabase.GetUserRecord '{ "userName" : "testuser", "service" : "io.systemd.Multiplexer" }'
@@ -48,11 +52,23 @@ if command -v userdbctl >/dev/null; then
     varlinkctl call --more -j /run/systemd/userdb/io.systemd.Multiplexer io.systemd.UserDatabase.GetMemberships '{ "service" : "io.systemd.Multiplexer" }' --graceful=io.systemd.UserDatabase.NoRecordFound | jq --seq .
     varlinkctl call --oneway /run/systemd/userdb/io.systemd.Multiplexer io.systemd.UserDatabase.GetMemberships '{ "service" : "io.systemd.Multiplexer" }'
     (! varlinkctl call --oneway /run/systemd/userdb/io.systemd.Multiplexer io.systemd.UserDatabase.GetMemberships '{ "service" : "io.systemd.Multiplexer" }' | grep .)
+
+    if command -v openssl >/dev/null && command -v groupadd >/dev/null; then
+        group=haldo
+        salt=waldo
+        getent group "$group" >/dev/null 2>&1 || groupadd "$group"
+        HASH="$(openssl passwd -6 -salt "$salt" baldo)"
+        groupmod -p "$HASH" "$group"
+
+        (! run0 -u testuser varlinkctl call --json=pretty \
+            /run/systemd/userdb/io.systemd.Multiplexer \
+            io.systemd.UserDatabase.GetGroupRecord \
+            '{"groupName":"haldo","service":"io.systemd.NameServiceSwitch"}' | grep waldo)
+    fi
 fi
 
 IDL_FILE="$(mktemp)"
 varlinkctl introspect /run/systemd/journal/io.systemd.journal io.systemd.Journal | tee "${IDL_FILE:?}"
-varlinkctl validate-idl "$IDL_FILE"
 varlinkctl validate-idl "$IDL_FILE"
 cat /bin/sh >"$IDL_FILE"
 (! varlinkctl validate-idl "$IDL_FILE")
@@ -91,7 +107,7 @@ trap rm_rf_sshbindir EXIT
 
 # Create a fake "ssh" binary that validates everything works as expected if invoked for the "ssh-unix:" Varlink transport
 cat > "$SSHBINDIR"/ssh <<'EOF'
-#!/bin/sh
+#!/usr/bin/env bash
 
 set -xe
 
@@ -107,7 +123,7 @@ SYSTEMD_SSH="$SSHBINDIR/ssh" varlinkctl info ssh-unix:foobar:/run/systemd/journa
 
 # Now build another fake "ssh" binary that does the same for "ssh-exec:"
 cat > "$SSHBINDIR"/ssh <<'EOF'
-#!/bin/sh
+#!/usr/bin/env bash
 
 set -xe
 
@@ -176,8 +192,8 @@ varlinkctl introspect /run/systemd/io.systemd.Hostname io.systemd.Hostname
 varlinkctl call /run/systemd/io.systemd.Hostname io.systemd.Hostname.Describe '{}'
 
 # Validate that --exec results in the very same values
-varlinkctl call /run/systemd/io.systemd.Hostname io.systemd.Hostname.Describe '{}' | jq > /tmp/describe1.json
-varlinkctl --exec call /run/systemd/io.systemd.Hostname io.systemd.Hostname.Describe '{}' -- jq > /tmp/describe2.json
+varlinkctl call /run/systemd/io.systemd.Hostname io.systemd.Hostname.Describe '{}' | jq >/tmp/describe1.json
+varlinkctl --exec call /run/systemd/io.systemd.Hostname io.systemd.Hostname.Describe '{}' -- jq >/tmp/describe2.json
 cmp /tmp/describe1.json /tmp/describe2.json
 rm /tmp/describe1.json /tmp/describe2.json
 
@@ -185,16 +201,47 @@ rm /tmp/describe1.json /tmp/describe2.json
 varlinkctl info /run/systemd/io.systemd.Manager
 varlinkctl introspect /run/systemd/io.systemd.Manager io.systemd.Manager
 varlinkctl call /run/systemd/io.systemd.Manager io.systemd.Manager.Describe '{}'
+varlinkctl call /run/systemd/io.systemd.Manager io.systemd.Manager.Reload '{}'
+# This will disconnect and fail, as the manager reexec and drops connections
+varlinkctl call /run/systemd/io.systemd.Manager io.systemd.Manager.Reexecute '{}' ||:
+
+# test io.systemd.Network
+varlinkctl info /run/systemd/netif/io.systemd.Network
+varlinkctl introspect /run/systemd/netif/io.systemd.Network io.systemd.Network
+varlinkctl call /run/systemd/netif/io.systemd.Network io.systemd.Network.Describe '{}'
 
 # test io.systemd.Unit
 varlinkctl info /run/systemd/io.systemd.Manager
 varlinkctl introspect /run/systemd/io.systemd.Manager io.systemd.Unit
 varlinkctl --more call /run/systemd/io.systemd.Manager io.systemd.Unit.List '{}'
 varlinkctl call /run/systemd/io.systemd.Manager io.systemd.Unit.List '{"name": "multi-user.target"}'
-varlinkctl call /run/systemd/io.systemd.Manager io.systemd.Unit.List '{"pid": {"pid": 0}}'
+varlinkctl call /run/systemd/io.systemd.Manager io.systemd.Unit.List '{"pid": {"pid": 1}}'
+(! varlinkctl call /run/systemd/io.systemd.Manager io.systemd.Unit.List '{}' |& grep "called without 'more' flag" >/dev/null)
+varlinkctl call /run/systemd/io.systemd.Manager io.systemd.Unit.List '{"name": "init.scope", "pid": {"pid": 1}}'
 (! varlinkctl call /run/systemd/io.systemd.Manager io.systemd.Unit.List '{"name": ""}')
 (! varlinkctl call /run/systemd/io.systemd.Manager io.systemd.Unit.List '{"name": "non-existent.service"}')
 (! varlinkctl call /run/systemd/io.systemd.Manager io.systemd.Unit.List '{"pid": {"pid": -1}}' )
+(! varlinkctl call /run/systemd/io.systemd.Manager io.systemd.Unit.List '{"name": "multi-user.target", "pid": {"pid": 1}}')
+set +o pipefail
+varlinkctl call /run/systemd/io.systemd.Manager io.systemd.Unit.SetProperties '{"runtime": true, "name": "non-existent.service", "properties": {"Markers": ["needs-restart"]}}' |& grep "io.systemd.Unit.NoSuchUnit"
+varlinkctl call /run/systemd/io.systemd.Manager io.systemd.Unit.SetProperties '{"runtime": true, "name": "systemd-journald.service", "properties": {"LoadState": "foobar"}}' |& grep "io.systemd.Unit.PropertyNotSupported"
+set -o pipefail
+
+varlinkctl call /run/systemd/io.systemd.Manager io.systemd.Unit.List '{"cgroup": "/init.scope"}'
+invocation_id="$(systemctl show -P InvocationID systemd-journald.service)"
+varlinkctl call /run/systemd/io.systemd.Manager io.systemd.Unit.List "{\"invocationID\": \"$invocation_id\"}"
+
+# test io.systemd.Metrics
+varlinkctl info /run/systemd/report/io.systemd.Manager
+
+varlinkctl list-methods /run/systemd/report/io.systemd.Manager
+varlinkctl list-methods -j /run/systemd/report/io.systemd.Manager io.systemd.Metrics | jq .
+
+varlinkctl introspect /run/systemd/report/io.systemd.Manager
+varlinkctl introspect -j /run/systemd/report/io.systemd.Manager io.systemd.Metrics | jq .
+
+varlinkctl --more call /run/systemd/report/io.systemd.Manager io.systemd.Metrics.List {}
+varlinkctl --more call /run/systemd/report/io.systemd.Manager io.systemd.Metrics.Describe {}
 
 # test io.systemd.Manager in user manager
 testuser_uid=$(id -u testuser)

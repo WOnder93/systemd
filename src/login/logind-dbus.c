@@ -898,6 +898,7 @@ int manager_create_session(
                 bool remote,
                 const char *remote_user,
                 const char *remote_host,
+                char * const *extra_device_access,
                 Session **ret_session) {
 
         bool mangle_class = false;
@@ -1052,6 +1053,10 @@ int manager_create_session(
                 if (r < 0)
                         goto fail;
         }
+
+        r = strv_copy_unless_empty(extra_device_access, &session->extra_device_access);
+        if (r < 0)
+                goto fail;
 
         if (seat) {
                 r = seat_attach_session(seat, session);
@@ -1227,6 +1232,7 @@ static int manager_create_session_by_bus(
                         remote,
                         remote_user,
                         remote_host,
+                        /* extra_device_access= */ NULL,
                         &session);
         if (r == -EBUSY)
                 return sd_bus_error_set(error, BUS_ERROR_SESSION_BUSY, "Already running in a session or user slice");
@@ -1304,7 +1310,7 @@ static int method_create_session(sd_bus_message *message, void *userdata, sd_bus
                         error,
                         uid,
                         leader_pid,
-                        /* leader_pidfd = */ -EBADF,
+                        /* leader_pidfd= */ -EBADF,
                         service,
                         type,
                         class,
@@ -1316,7 +1322,7 @@ static int method_create_session(sd_bus_message *message, void *userdata, sd_bus
                         remote,
                         remote_user,
                         remote_host,
-                        /* flags = */ 0);
+                        /* flags= */ 0);
 }
 
 static int method_create_session_pidfd(sd_bus_message *message, void *userdata, sd_bus_error *error) {
@@ -1351,7 +1357,7 @@ static int method_create_session_pidfd(sd_bus_message *message, void *userdata, 
                         message,
                         error,
                         uid,
-                        /* leader_pid = */ 0,
+                        /* leader_pid= */ 0,
                         leader_fd,
                         service,
                         type,
@@ -1668,6 +1674,7 @@ static int method_set_user_linger(sd_bus_message *message, void *userdata, sd_bu
                         return r;
 
                 if (manager_add_user_by_uid(m, uid, &u) >= 0) {
+                        (void) user_send_changed(u, "Linger");
                         r = user_start(u);
                         if (r < 0) {
                                 user_add_to_gc_queue(u);
@@ -1685,6 +1692,7 @@ static int method_set_user_linger(sd_bus_message *message, void *userdata, sd_bu
                         /* Make sure that disabling lingering will terminate the user tracking if no sessions pin it. */
                         u->gc_mode = USER_GC_BY_PIN;
                         user_add_to_gc_queue(u);
+                        (void) user_send_changed(u, "Linger");
                 }
         }
 
@@ -1944,6 +1952,11 @@ static int send_prepare_for(Manager *m, const HandleActionData *a, bool _active)
 
         assert(m);
         assert(a);
+
+        /* Only sleep/shutdown actions emit a signal */
+        if (a->inhibit_what < 0)
+                return 0;
+
         assert(IN_SET(a->inhibit_what, INHIBIT_SHUTDOWN, INHIBIT_SLEEP));
 
         /* We need to send both old and new signal for backward compatibility. The newer one allows clients
@@ -2108,9 +2121,9 @@ static int delay_shutdown_or_sleep(
 
         r = event_reset_time_relative(
                         m->event, &m->inhibit_timeout_source,
-                        CLOCK_MONOTONIC, m->inhibit_delay_max, /* accuracy = */ 0,
+                        CLOCK_MONOTONIC, m->inhibit_delay_max, /* accuracy= */ 0,
                         manager_inhibit_timeout_handler, m,
-                        /* priority = */ 0, "inhibit-timeout", /* force_reset = */ true);
+                        /* priority= */ 0, "inhibit-timeout", /* force_reset= */ true);
         if (r < 0)
                 return log_error_errno(r, "Failed to reset timer event source for inhibit timeout: %m");
 
@@ -2161,6 +2174,7 @@ int bus_manager_shutdown_or_sleep_now_or_later(
 
         delayed =
                 m->inhibit_delay_max > 0 &&
+                a->inhibit_what >= 0 &&
                 manager_is_inhibited(m, a->inhibit_what, NULL, MANAGER_IS_INHIBITED_CHECK_DELAY, UID_INVALID, NULL);
 
         if (delayed)
@@ -2530,7 +2544,7 @@ static int method_sleep(sd_bus_message *message, void *userdata, sd_bus_error *e
         return method_do_shutdown_or_sleep(
                         m, message,
                         HANDLE_SLEEP,
-                        /* with_flags = */ true,
+                        /* with_flags= */ true,
                         error);
 }
 
@@ -2812,15 +2826,13 @@ static int method_schedule_shutdown(sd_bus_message *message, void *userdata, sd_
         if (elapse == USEC_INFINITY) {
                 if (m->maintenance_time) {
                         r = calendar_spec_next_usec(m->maintenance_time, now(CLOCK_REALTIME), &elapse);
-                        if (r < 0) {
-                                if (r == -ENOENT)
-                                        return sd_bus_error_set(error,
-                                                                BUS_ERROR_DESIGNATED_MAINTENANCE_TIME_NOT_SCHEDULED,
-                                                                "No upcoming maintenance window scheduled");
-
+                        if (r == -ENOENT)
+                                return sd_bus_error_set(error,
+                                                        BUS_ERROR_DESIGNATED_MAINTENANCE_TIME_NOT_SCHEDULED,
+                                                        "No upcoming maintenance window scheduled");
+                        if (r < 0)
                                 return sd_bus_error_set_errnof(error, r,
                                                                "Failed to determine next maintenance window: %m");
-                        }
 
                         log_info("Scheduled %s at maintenance window %s", type, FORMAT_TIMESTAMP(elapse));
                 } else
@@ -2915,7 +2927,6 @@ static int method_can_shutdown_or_sleep(
         _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *creds = NULL;
         bool multiple_sessions, challenge, blocked, check_unit_state = true;
         const HandleActionData *a;
-        const char *result = NULL;
         uid_t uid;
         int r;
 
@@ -2972,11 +2983,26 @@ static int method_can_shutdown_or_sleep(
                 if (r < 0)
                         return r;
 
-                if (!streq(load_state, "loaded")) {
-                        result = "no";
-                        goto finish;
-                }
+                if (!streq(load_state, "loaded"))
+                        return sd_bus_reply_method_return(message, "s", "no");
         }
+
+        const char *result;
+        r = bus_test_polkit(
+                        message,
+                        a->polkit_action,
+                        /* details= */ NULL,
+                        /* good_user= */ UID_INVALID,
+                        &challenge,
+                        error);
+        if (r < 0)
+                return r;
+        if (r > 0)
+                result = "yes";
+        else if (challenge)
+                result = "challenge";
+        else
+                result = "no";
 
         if (multiple_sessions) {
                 r = bus_test_polkit(
@@ -2989,12 +3015,13 @@ static int method_can_shutdown_or_sleep(
                 if (r < 0)
                         return r;
 
-                if (r > 0)
-                        result = "yes";
-                else if (challenge)
-                        result = "challenge";
-                else
-                        result = "no";
+                if (r == 0) {
+                        if (challenge) {
+                                if (streq(result, "yes")) /* Avoid upgrading no -> challenge */
+                                        result = "challenge";
+                        } else
+                                result = "no";
+                }
         }
 
         if (blocked) {
@@ -3008,39 +3035,21 @@ static int method_can_shutdown_or_sleep(
                 if (r < 0)
                         return r;
 
-                if (r > 0) {
-                        if (!result)
-                                result = "yes";
-                } else if (challenge) {
-                        if (!result || streq(result, "yes"))
-                                result = "challenge";
-                } else
-                        result = "no";
+                if (r == 0) {
+                        if (challenge) {
+                                if (streq(result, "yes"))
+                                        result = "inhibited";
+                                /* If result is already "challenge" or "no", the held inhibitor has no effect */
+                        } else {
+                                if (streq(result, "yes"))
+                                        result = "inhibitor-blocked";
+                                else if (streq(result, "challenge"))
+                                        result = "challenge-inhibitor-blocked";
+                                /* If the result is already "no", the held inhibitor has no effect */
+                        }
+                }
         }
 
-        if (!multiple_sessions && !blocked) {
-                /* If neither inhibit nor multiple sessions
-                 * apply then just check the normal policy */
-
-                r = bus_test_polkit(
-                                message,
-                                a->polkit_action,
-                                /* details= */ NULL,
-                                /* good_user= */ UID_INVALID,
-                                &challenge,
-                                error);
-                if (r < 0)
-                        return r;
-
-                if (r > 0)
-                        result = "yes";
-                else if (challenge)
-                        result = "challenge";
-                else
-                        result = "no";
-        }
-
- finish:
         return sd_bus_reply_method_return(message, "s", result);
 }
 
@@ -3951,7 +3960,7 @@ static const sd_bus_vtable manager_vtable[] = {
         SD_BUS_PROPERTY("RuntimeDirectorySize", "t", NULL, offsetof(Manager, runtime_dir_size), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("RuntimeDirectoryInodesMax", "t", NULL, offsetof(Manager, runtime_dir_inodes), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("InhibitorsMax", "t", NULL, offsetof(Manager, inhibitors_max), SD_BUS_VTABLE_PROPERTY_CONST),
-        SD_BUS_PROPERTY("NCurrentInhibitors", "t", property_get_hashmap_size, offsetof(Manager, inhibitors), 0),
+        SD_BUS_PROPERTY("NCurrentInhibitors", "t", property_get_hashmap_size, offsetof(Manager, inhibitors), SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
         SD_BUS_PROPERTY("SessionsMax", "t", NULL, offsetof(Manager, sessions_max), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("NCurrentSessions", "t", property_get_hashmap_size, offsetof(Manager, sessions), 0),
         SD_BUS_PROPERTY("UserTasksMax", "t", property_get_compat_user_tasks_max, 0, SD_BUS_VTABLE_PROPERTY_CONST|SD_BUS_VTABLE_HIDDEN),
@@ -4427,7 +4436,7 @@ int match_job_removed(sd_bus_message *message, void *userdata, sd_bus_error *err
 
                                         LIST_FOREACH(sessions_by_user, s, user->sessions)
                                                 /* Don't propagate user service failures to the client */
-                                                session_jobs_reply(s, id, unit, /* result = */ NULL);
+                                                session_jobs_reply(s, id, unit, /* result= */ NULL);
 
                                         user_save(user);
                                         break;
@@ -4660,7 +4669,7 @@ int manager_start_scope(
                                         manager,
                                         scope,
                                         pidref,
-                                        /* allow_pidfd = */ false,
+                                        /* allow_pidfd= */ false,
                                         slice,
                                         description,
                                         requires,

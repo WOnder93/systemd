@@ -5,6 +5,7 @@
 #include "alloc-util.h"
 #include "ansi-color.h"
 #include "extract-word.h"
+#include "json-internal.h"
 #include "json-util.h"
 #include "log.h"
 #include "memstream-util.h"
@@ -261,6 +262,12 @@ static int varlink_idl_format_field(
         case SD_VARLINK_OBJECT:
                 fputs(colors[COLOR_FIELD_TYPE], f);
                 fputs("object", f);
+                fputs(colors[COLOR_RESET], f);
+                break;
+
+        case SD_VARLINK_ANY:
+                fputs(colors[COLOR_FIELD_TYPE], f);
+                fputs("any", f);
                 fputs(colors[COLOR_RESET], f);
                 break;
 
@@ -866,6 +873,9 @@ static int varlink_idl_subparse_field_type(
         } else if (startswith(*p, "object")) {
                 l = 6;
                 field->field_type = SD_VARLINK_OBJECT;
+        } else if (startswith(*p, "any")) {
+                l = 3;
+                field->field_type = SD_VARLINK_ANY;
         } else if (**p == '(') {
                 _cleanup_(varlink_symbol_freep) sd_varlink_symbol *symbol = NULL;
                 size_t n_fields = 0;
@@ -1425,7 +1435,7 @@ bool varlink_idl_symbol_name_is_valid(const char *name) {
 
         /* We might want to reference VARLINK_STRUCT_TYPE and VARLINK_ENUM_TYPE symbols where we also
          * reference native types, hence make sure the native type names are refused as symbol names. */
-        if (STR_IN_SET(name, "bool", "int", "float", "string", "object"))
+        if (STR_IN_SET(name, "bool", "int", "float", "string", "object", "any"))
                 return false;
 
         /* Symbols must be named with an uppercase letter as first character */
@@ -1694,6 +1704,8 @@ static int varlink_idl_validate_symbol(const sd_varlink_symbol *symbol, sd_json_
 
 static int varlink_idl_validate_field_element_type(const sd_varlink_field *field, sd_json_variant *v) {
         assert(field);
+        assert(v);
+        assert(!sd_json_variant_is_null(v));
 
         switch (field->field_type) {
 
@@ -1704,33 +1716,58 @@ static int varlink_idl_validate_field_element_type(const sd_varlink_field *field
 
         case SD_VARLINK_BOOL:
                 if (!sd_json_variant_is_boolean(v))
-                        return varlink_idl_log(SYNTHETIC_ERRNO(EMEDIUMTYPE), "Field '%s' should be a bool, but it is not, refusing.", strna(field->name));
+                        return varlink_idl_log(
+                                        SYNTHETIC_ERRNO(EMEDIUMTYPE),
+                                        "Field '%s' should be a bool, but it is of type '%s', refusing.",
+                                        strna(field->name),
+                                        strna(sd_json_variant_type_to_string(sd_json_variant_type(v))));
 
                 break;
 
         case SD_VARLINK_INT:
                 /* Allow strings here too, since integers with > 53 bits are often passed in as strings */
                 if (!sd_json_variant_is_integer(v) && !sd_json_variant_is_unsigned(v) && !sd_json_variant_is_string(v))
-                        return varlink_idl_log(SYNTHETIC_ERRNO(EMEDIUMTYPE), "Field '%s' should be an int, but it is not, refusing.", strna(field->name));
+                        return varlink_idl_log(
+                                        SYNTHETIC_ERRNO(EMEDIUMTYPE),
+                                        "Field '%s' should be an int, but it is of type '%s', refusing.",
+                                        strna(field->name),
+                                        strna(sd_json_variant_type_to_string(sd_json_variant_type(v))));
 
                 break;
 
         case SD_VARLINK_FLOAT:
                 if (!sd_json_variant_is_number(v))
-                        return varlink_idl_log(SYNTHETIC_ERRNO(EMEDIUMTYPE), "Field '%s' should be a float, but it is not, refusing.", strna(field->name));
+                        return varlink_idl_log(
+                                        SYNTHETIC_ERRNO(EMEDIUMTYPE),
+                                        "Field '%s' should be a float, but it is of type '%s', refusing.",
+                                        strna(field->name),
+                                        strna(sd_json_variant_type_to_string(sd_json_variant_type(v))));
 
                 break;
 
         case SD_VARLINK_STRING:
                 if (!sd_json_variant_is_string(v))
-                        return varlink_idl_log(SYNTHETIC_ERRNO(EMEDIUMTYPE), "Field '%s' should be a string, but it is not, refusing.", strna(field->name));
+                        return varlink_idl_log(
+                                        SYNTHETIC_ERRNO(EMEDIUMTYPE),
+                                        "Field '%s' should be a string, but it is of type '%s', refusing.",
+                                        strna(field->name),
+                                        strna(sd_json_variant_type_to_string(sd_json_variant_type(v))));
 
                 break;
 
         case SD_VARLINK_OBJECT:
                 if (!sd_json_variant_is_object(v))
-                        return varlink_idl_log(SYNTHETIC_ERRNO(EMEDIUMTYPE), "Field '%s' should be an object, but it is not, refusing.", strna(field->name));
+                        return varlink_idl_log(
+                                        SYNTHETIC_ERRNO(EMEDIUMTYPE),
+                                        "Field '%s' should be an object, but it is of type '%s', refusing.",
+                                        strna(field->name),
+                                        strna(sd_json_variant_type_to_string(sd_json_variant_type(v))));
 
+                break;
+
+        case SD_VARLINK_ANY:
+                /* The any type accepts any non-null JSON value, no validation needed. (Note that null is
+                 * already handled by the caller.) */
                 break;
 
         case _SD_VARLINK_FIELD_COMMENT:
@@ -1758,7 +1795,10 @@ static int varlink_idl_validate_field(const sd_varlink_field *field, sd_json_var
                 sd_json_variant *i;
 
                 if (!sd_json_variant_is_array(v))
-                        return varlink_idl_log(SYNTHETIC_ERRNO(EMEDIUMTYPE), "Field '%s' should be an array, but it is not, refusing.", strna(field->name));
+                        return varlink_idl_log(
+                                        SYNTHETIC_ERRNO(EMEDIUMTYPE), "Field '%s' should be an array, but it is of type '%s', refusing.",
+                                        strna(field->name),
+                                        strna(sd_json_variant_type_to_string(sd_json_variant_type(v))));
 
                 JSON_VARIANT_ARRAY_FOREACH(i, v) {
                         r = varlink_idl_validate_field_element_type(field, i);
@@ -1771,7 +1811,11 @@ static int varlink_idl_validate_field(const sd_varlink_field *field, sd_json_var
                 sd_json_variant *e;
 
                 if (!sd_json_variant_is_object(v))
-                        return varlink_idl_log(SYNTHETIC_ERRNO(EMEDIUMTYPE), "Field '%s' should be an object, but it is not, refusing.", strna(field->name));
+                        return varlink_idl_log(
+                                        SYNTHETIC_ERRNO(EMEDIUMTYPE),
+                                        "Field '%s' should be an object, but it is of type '%s', refusing.",
+                                        strna(field->name),
+                                        strna(sd_json_variant_type_to_string(sd_json_variant_type(v))));
 
                 JSON_VARIANT_OBJECT_FOREACH(k, e, v) {
                         r = varlink_idl_validate_field_element_type(field, e);
@@ -1793,11 +1837,9 @@ static int varlink_idl_validate_symbol(const sd_varlink_symbol *symbol, sd_json_
         assert(symbol);
         assert(!IN_SET(symbol->symbol_type, _SD_VARLINK_SYMBOL_COMMENT, _SD_VARLINK_INTERFACE_COMMENT));
 
-        if (!v) {
-                if (reterr_bad_field)
-                        *reterr_bad_field = NULL;
-                return varlink_idl_log(SYNTHETIC_ERRNO(EMEDIUMTYPE), "Null object passed, refusing.");
-        }
+        /* Consider a NULL pointer equivalent to an empty object */
+        if (!v)
+                v = JSON_VARIANT_MAGIC_EMPTY_OBJECT;
 
         switch (symbol->symbol_type) {
 

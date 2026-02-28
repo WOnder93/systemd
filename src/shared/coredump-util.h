@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #pragma once
 
-#include "forward.h"
+#include "shared-forward.h"
 
 typedef enum CoredumpFilter {
         COREDUMP_FILTER_PRIVATE_ANONYMOUS = 0,
@@ -34,8 +34,7 @@ typedef enum SuidDumpMode {
 
 int set_dumpable(SuidDumpMode mode);
 
-const char* coredump_filter_to_string(CoredumpFilter i) _const_;
-CoredumpFilter coredump_filter_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(coredump_filter, CoredumpFilter);
 int coredump_filter_mask_from_string(const char *s, uint64_t *ret);
 
 int parse_auxv(int log_level,

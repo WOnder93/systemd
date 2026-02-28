@@ -125,16 +125,17 @@ DEFINE_PRIVATE_HASH_OPS_WITH_VALUE_DESTRUCTOR(
  **********************************************************************/
 
 static int spawn_child(const char *child, char **argv) {
-        pid_t child_pid;
         int fd[2], r;
 
         if (pipe(fd) < 0)
                 return log_error_errno(errno, "Failed to create pager pipe: %m");
 
-        r = safe_fork_full("(remote)",
-                           (int[]) {STDIN_FILENO, fd[1], STDERR_FILENO },
-                           NULL, 0,
-                           FORK_RESET_SIGNALS|FORK_CLOSE_ALL_FDS|FORK_DEATHSIG_SIGTERM|FORK_REARRANGE_STDIO|FORK_LOG|FORK_RLIMIT_NOFILE_SAFE, &child_pid);
+        r = pidref_safe_fork_full(
+                        "(remote)",
+                        (int[]) {STDIN_FILENO, fd[1], STDERR_FILENO },
+                        NULL, 0,
+                        FORK_RESET_SIGNALS|FORK_CLOSE_ALL_FDS|FORK_DEATHSIG_SIGTERM|FORK_REARRANGE_STDIO|FORK_LOG|FORK_RLIMIT_NOFILE_SAFE,
+                        /* ret= */ NULL);
         if (r < 0) {
                 safe_close_pair(fd);
                 return r;
@@ -192,13 +193,8 @@ static int spawn_getter(const char *getter) {
 
 #if HAVE_MICROHTTPD
 
-static int null_timer_event_handler(sd_event_source *s,
-                                uint64_t usec,
-                                void *userdata);
-static int dispatch_http_event(sd_event_source *event,
-                               int fd,
-                               uint32_t revents,
-                               void *userdata);
+static int null_timer_event_handler(sd_event_source *timer_event, uint64_t usec, void *userdata);
+static int dispatch_http_event(sd_event_source *event, int fd, uint32_t revents, void *userdata);
 
 static int build_accept_encoding(char **ret) {
         assert(ret);
@@ -713,7 +709,7 @@ static int create_remoteserver(
                 if (fd < 0)
                         return fd;
 
-                r = journal_remote_add_source(s, fd, (char*) arg_output, false);
+                r = journal_remote_add_source(s, fd, arg_output, false);
                 if (r < 0)
                         return r;
         }
@@ -999,7 +995,7 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case 'o':
-                        r = parse_path_argument(optarg, /* suppress_root = */ false, &arg_output);
+                        r = parse_path_argument(optarg, /* suppress_root= */ false, &arg_output);
                         if (r < 0)
                                 return r;
                         break;

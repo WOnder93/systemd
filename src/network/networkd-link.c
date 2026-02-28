@@ -23,6 +23,7 @@
 #include "arphrd-util.h"
 #include "bitfield.h"
 #include "device-util.h"
+#include "dns-domain.h"
 #include "errno-util.h"
 #include "ethtool-util.h"
 #include "event-util.h"
@@ -53,6 +54,7 @@
 #include "networkd-nexthop.h"
 #include "networkd-queue.h"
 #include "networkd-radv.h"
+#include "networkd-resolve-hook.h"
 #include "networkd-route.h"
 #include "networkd-route-util.h"
 #include "networkd-routing-policy-rule.h"
@@ -61,6 +63,7 @@
 #include "networkd-state-file.h"
 #include "networkd-sysctl.h"
 #include "networkd-wifi.h"
+#include "networkd-wwan-bus.h"
 #include "ordered-set.h"
 #include "parse-util.h"
 #include "set.h"
@@ -410,7 +413,7 @@ int link_stop_engines(Link *link, bool may_keep_dynamic) {
                 if (r < 0)
                         RET_GATHER(ret, log_link_warning_errno(link, r, "Could not stop DHCPv6 client: %m"));
 
-                r = dhcp_pd_remove(link, /* only_marked = */ false);
+                r = dhcp_pd_remove(link, /* only_marked= */ false);
                 if (r < 0)
                         RET_GATHER(ret, log_link_warning_errno(link, r, "Could not remove DHCPv6 PD addresses and routes: %m"));
 
@@ -464,7 +467,7 @@ void link_enter_failed(Link *link) {
                 return;
 
 stop:
-        (void) link_stop_engines(link, /* may_keep_dynamic = */ false);
+        (void) link_stop_engines(link, /* may_keep_dynamic= */ false);
 }
 
 void link_check_ready(Link *link) {
@@ -527,6 +530,9 @@ void link_check_ready(Link *link) {
         if (!link->sr_iov_configured)
                 return (void) log_link_debug(link, "%s(): SR-IOV is not configured.", __func__);
 
+        if (!link->bearer_configured)
+                return (void) log_link_debug(link, "%s(): Bearer has not been applied.", __func__);
+
         /* IPv6LL is assigned after the link gains its carrier. */
         if (!link->network->configure_without_carrier &&
             link_ipv6ll_enabled(link) &&
@@ -536,7 +542,7 @@ void link_check_ready(Link *link) {
         /* All static addresses must be ready. */
         bool has_static_address = false;
         SET_FOREACH(a, link->addresses) {
-                if (a->source != NETWORK_CONFIG_SOURCE_STATIC)
+                if (!IN_SET(a->source, NETWORK_CONFIG_SOURCE_STATIC, NETWORK_CONFIG_SOURCE_MODEM_MANAGER))
                         continue;
                 if (!address_is_ready(a))
                         return (void) log_link_debug(link, "%s(): static address %s is not ready.", __func__,
@@ -575,7 +581,7 @@ void link_check_ready(Link *link) {
                  link_check_addresses_ready(link, NETWORK_CONFIG_SOURCE_NDISC));
 
         /* If the uplink for PD is self, then request the corresponding DHCP protocol is also ready. */
-        if (dhcp_pd_is_uplink(link, link, /* accept_auto = */ false)) {
+        if (dhcp_pd_is_uplink(link, link, /* accept_auto= */ false)) {
                 if (link_dhcp4_enabled(link) && link->network->dhcp_use_6rd &&
                     sd_dhcp_lease_has_6rd(link->dhcp_lease)) {
                         if (!link->dhcp4_configured)
@@ -830,9 +836,9 @@ int link_handle_bound_to_list(Link *link) {
                 }
 
         if (!required_up && link_is_up)
-                return link_request_to_bring_up_or_down(link, /* up = */ false);
+                return link_request_to_bring_up_or_down(link, /* up= */ false);
         if (required_up && !link_is_up)
-                return link_request_to_bring_up_or_down(link, /* up = */ true);
+                return link_request_to_bring_up_or_down(link, /* up= */ true);
 
         return 0;
 }
@@ -1070,6 +1076,8 @@ static Link *link_drop(Link *link) {
 
         assert(link->manager);
 
+        bool notify = link_has_local_lease_domain(link);
+
         link_set_state(link, LINK_STATE_LINGER);
 
         /* Drop all references from other links and manager. Note that async netlink calls may have
@@ -1098,6 +1106,10 @@ static Link *link_drop(Link *link) {
 
         /* The following must be called at last. */
         assert_se(hashmap_remove(link->manager->links_by_index, INT_TO_PTR(link->ifindex)) == link);
+
+        if (notify)
+                manager_notify_hook_filters(link->manager);
+
         return link_unref(link);
 }
 
@@ -1205,7 +1217,7 @@ static int link_configure(Link *link) {
         if (r < 0)
                 return r;
 
-        r = link_request_to_set_mac(link, /* allow_retry = */ true);
+        r = link_request_to_set_mac(link, /* allow_retry= */ true);
         if (r < 0)
                 return r;
 
@@ -1285,6 +1297,10 @@ static int link_configure(Link *link) {
         if (r < 0)
                 return r;
 
+        r = link_modem_reconfigure(link);
+        if (r < 0)
+                return r;
+
         if (!link_has_carrier(link))
                 return 0;
 
@@ -1351,10 +1367,12 @@ static void link_enter_unmanaged(Link *link) {
         if (link->state == LINK_STATE_UNMANAGED)
                 return;
 
+        bool notify = link_has_local_lease_domain(link);
+
         log_link_full(link, link->state == LINK_STATE_INITIALIZED ? LOG_DEBUG : LOG_INFO,
                       "Unmanaging interface.");
 
-        (void) link_stop_engines(link, /* may_keep_dynamic = */ false);
+        (void) link_stop_engines(link, /* may_keep_dynamic= */ false);
         (void) link_drop_requests(link);
         (void) link_drop_static_config(link);
 
@@ -1367,6 +1385,9 @@ static void link_enter_unmanaged(Link *link) {
 
         link->network = network_unref(link->network);
         link_set_state(link, LINK_STATE_UNMANAGED);
+
+        if (notify)
+                manager_notify_hook_filters(link->manager);
 }
 
 static int link_managed_by_us(Link *link) {
@@ -1466,7 +1487,7 @@ int link_reconfigure_impl(Link *link, LinkReconfigurationFlag flags) {
         } else {
                 /* Otherwise, stop DHCP client and friends unconditionally, and drop all dynamic
                  * configurations like DHCP address and routes. */
-                r = link_stop_engines(link, /* may_keep_dynamic = */ false);
+                r = link_stop_engines(link, /* may_keep_dynamic= */ false);
                 if (r < 0)
                         return r;
 
@@ -1624,7 +1645,7 @@ static int link_initialized_and_synced(Link *link) {
                         return r;
         }
 
-        return link_reconfigure_impl(link, /* flags = */ 0);
+        return link_reconfigure_impl(link, /* flags= */ 0);
 }
 
 static int link_initialized_handler(sd_netlink *rtnl, sd_netlink_message *m, Link *link) {
@@ -1672,7 +1693,7 @@ static int link_initialized(Link *link, sd_device *device) {
                 log_link_warning_errno(link, r, "Failed to manage SR-IOV PF and VF ports, ignoring: %m");
 
         if (link->state != LINK_STATE_PENDING)
-                return link_reconfigure(link, /* flags = */ 0);
+                return link_reconfigure(link, /* flags= */ 0);
 
         log_link_debug(link, "udev initialized link");
 
@@ -1848,7 +1869,7 @@ static int link_carrier_lost_impl(Link *link) {
         if (!link->network)
                 return ret;
 
-        RET_GATHER(ret, link_stop_engines(link, /* may_keep_dynamic = */ false));
+        RET_GATHER(ret, link_stop_engines(link, /* may_keep_dynamic= */ false));
         RET_GATHER(ret, link_drop_static_config(link));
 
         return ret;
@@ -1935,7 +1956,7 @@ static int link_admin_state_up(Link *link) {
 
         if (link->activated && link->network->activation_policy == ACTIVATION_POLICY_ALWAYS_DOWN) {
                 log_link_info(link, "Activation policy is \"always-down\", forcing link down.");
-                return link_request_to_bring_up_or_down(link, /* up = */ false);
+                return link_request_to_bring_up_or_down(link, /* up= */ false);
         }
 
         /* We set the ipv6 mtu after the device mtu, but the kernel resets
@@ -1958,7 +1979,7 @@ static int link_admin_state_down(Link *link) {
 
         if (link->activated && link->network->activation_policy == ACTIVATION_POLICY_ALWAYS_UP) {
                 log_link_info(link, "Activation policy is \"always-up\", forcing link up.");
-                return link_request_to_bring_up_or_down(link, /* up = */ true);
+                return link_request_to_bring_up_or_down(link, /* up= */ true);
         }
 
         return 0;
@@ -2225,7 +2246,7 @@ static int link_update_flags(Link *link, sd_netlink_message *message) {
         if (!had_carrier && link_has_carrier(link))
                 r = link_carrier_gained(link);
         else if (had_carrier && !link_has_carrier(link))
-                link_carrier_lost(link);
+                r = link_carrier_lost(link);
         if (r < 0)
                 return r;
 
@@ -2316,38 +2337,6 @@ static int link_update_driver(Link *link, sd_netlink_message *message) {
         return 1; /* needs reconfigure */
 }
 
-static int link_update_permanent_hardware_address_from_ethtool(Link *link, sd_netlink_message *message) {
-        int r;
-
-        assert(link);
-        assert(link->manager);
-        assert(message);
-
-        if (link->ethtool_permanent_hw_addr_read)
-                return 0;
-
-        /* When udevd is running, read the permanent hardware address after the interface is
-         * initialized by udevd. Otherwise, ethtool may not work correctly. See issue #22538.
-         * When udevd is not running, read the value when the interface is detected. */
-        if (udev_available() && !link->dev)
-                return 0;
-
-        /* If the interface does not have a hardware address, then it will not have a permanent address either. */
-        r = netlink_message_read_hw_addr(message, IFLA_ADDRESS, NULL);
-        if (r == -ENODATA)
-                return 0;
-        if (r < 0)
-                return log_link_debug_errno(link, r, "Failed to read IFLA_ADDRESS attribute: %m");
-
-        link->ethtool_permanent_hw_addr_read = true;
-
-        r = ethtool_get_permanent_hw_addr(&link->manager->ethtool_fd, link->ifname, &link->permanent_hw_addr);
-        if (r < 0)
-                log_link_debug_errno(link, r, "Permanent hardware address not found, continuing without: %m");
-
-        return 0;
-}
-
 static int link_update_permanent_hardware_address(Link *link, sd_netlink_message *message) {
         int r;
 
@@ -2359,15 +2348,10 @@ static int link_update_permanent_hardware_address(Link *link, sd_netlink_message
                 return 0;
 
         r = netlink_message_read_hw_addr(message, IFLA_PERM_ADDRESS, &link->permanent_hw_addr);
-        if (r < 0) {
-                if (r != -ENODATA)
-                        return log_link_debug_errno(link, r, "Failed to read IFLA_PERM_ADDRESS attribute: %m");
-
-                /* Fallback to ethtool for kernels older than v5.6 (f74877a5457d34d604dba6dbbb13c4c05bac8b93). */
-                r = link_update_permanent_hardware_address_from_ethtool(link, message);
-                if (r < 0)
-                        return r;
-        }
+        if (r == -ENODATA)
+                return 0;
+        if (r < 0)
+                return log_link_debug_errno(link, r, "Failed to read IFLA_PERM_ADDRESS attribute: %m");
 
         if (link->permanent_hw_addr.length > 0)
                 log_link_debug(link, "Saved permanent hardware address: %s", HW_ADDR_TO_STR(&link->permanent_hw_addr));
@@ -2923,7 +2907,7 @@ int manager_rtnl_process_link(sd_netlink *rtnl, sd_netlink_message *message, Man
                         if (manager->enumerating)
                                 return 0;
 
-                        r = link_reconfigure_impl(link, /* flags = */ 0);
+                        r = link_reconfigure_impl(link, /* flags= */ 0);
                         if (r < 0) {
                                 log_link_warning_errno(link, r, "Failed to reconfigure interface: %m");
                                 link_enter_failed(link);
@@ -3061,3 +3045,12 @@ static const char * const kernel_operstate_table[] = {
 };
 
 DEFINE_STRING_TABLE_LOOKUP_TO_STRING(kernel_operstate, int);
+
+bool link_has_local_lease_domain(Link *link) {
+        assert(link);
+
+        return link->dhcp_server &&
+                link->network &&
+                link->network->dhcp_server_local_lease_domain &&
+                !dns_name_is_root(link->network->dhcp_server_local_lease_domain);
+}

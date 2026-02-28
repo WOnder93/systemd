@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
-#include <linux/fs.h>
 #include <linux/magic.h>
 #include <sys/ioctl.h>
 #include <threads.h>
@@ -16,7 +15,6 @@
 #include "stat-util.h"
 #include "stdio-util.h"
 #include "string-util.h"
-#include "unaligned.h"
 
 static thread_local int have_pidfs = -1;
 
@@ -29,7 +27,7 @@ int pidfd_check_pidfs(int pid_fd) {
 
         _cleanup_close_ int our_fd = -EBADF;
         if (pid_fd < 0) {
-                our_fd = pidfd_open(getpid_cached(), /* flags = */ 0);
+                our_fd = pidfd_open(getpid_cached(), /* flags= */ 0);
                 if (our_fd < 0)
                         return -errno;
 
@@ -56,7 +54,7 @@ int pidfd_get_namespace(int fd, unsigned long ns_type_cmd) {
         if (have_pidfs == 0 || !cached_supported)
                 return -EOPNOTSUPP;
 
-        int nsfd = ioctl(fd, ns_type_cmd);
+        int nsfd = ioctl(fd, ns_type_cmd, 0);
         if (nsfd < 0) {
                 /* Kernel returns EOPNOTSUPP if the ns type in question is disabled. Hence we need to look
                  * at precise errno instead of generic ERRNO_IS_(IOCTL_)NOT_SUPPORTED. */
@@ -73,7 +71,7 @@ int pidfd_get_namespace(int fd, unsigned long ns_type_cmd) {
         return nsfd;
 }
 
-static int pidfd_get_info(int fd, struct pidfd_info *info) {
+int pidfd_get_info(int fd, struct pidfd_info *info) {
         static bool cached_supported = true;
 
         assert(fd >= 0);
@@ -236,25 +234,10 @@ int pidfd_get_inode_id_impl(int fd, uint64_t *ret) {
 
         assert(fd >= 0);
 
+        /* Since kernel 6.14 (b3caba8f7a34a2bbaf45ffc6ff3a49b70afeb192), we can use name_to_handle_at(). */
         if (file_handle_supported) {
-                union {
-                        struct file_handle file_handle;
-                        uint8_t space[offsetof(struct file_handle, f_handle) + sizeof(uint64_t)];
-                } fh = {
-                        .file_handle.handle_bytes = sizeof(uint64_t),
-                        .file_handle.handle_type = FILEID_KERNFS,
-                };
-                int mnt_id;
-
-                r = RET_NERRNO(name_to_handle_at(fd, "", &fh.file_handle, &mnt_id, AT_EMPTY_PATH));
-                if (r >= 0) {
-                        if (ret)
-                                /* Note, "struct file_handle" is 32bit aligned usually, but we need to read a 64bit value from it */
-                                *ret = unaligned_read_ne64(fh.file_handle.f_handle);
-                        return 0;
-                }
-                assert(r != -EOVERFLOW);
-                if (is_name_to_handle_at_fatal_error(r))
+                r = fd_to_handle_u64(fd, ret);
+                if (r >= 0 || is_name_to_handle_at_fatal_error(r))
                         return r;
 
                 file_handle_supported = false;

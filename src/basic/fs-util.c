@@ -288,15 +288,20 @@ int fchmod_opath(int fd, mode_t m) {
          * - fchmod(2) only operates on open files (i. e., fds with an open file description);
          * - fchmodat(2) does not have a flag arg like fchownat(2) does, so no way to pass AT_EMPTY_PATH;
          *   + it should not be confused with the libc fchmodat(3) interface, which adds 4th flag argument,
-         *     but does not support AT_EMPTY_PATH (only supports AT_SYMLINK_NOFOLLOW);
+         *     and supports AT_EMPTY_PATH since v2.39 (previously only supported AT_SYMLINK_NOFOLLOW). So if
+         *     the kernel has fchmodat2(2), since v2.39 glibc will call into it directly. If the kernel
+         *     doesn't, or glibc is older than v2.39, glibc's internal fallback will return EINVAL if
+         *     AT_EMPTY_PATH is passed.
          * - fchmodat2(2) supports all the AT_* flags, but is still very recent.
          *
-         * We try to use fchmodat2(), and, if it is not supported, resort
-         * to the /proc/self/fd dance. */
+         * We try to use fchmodat(3) first, and on EINVAL fall back to fchmodat2(), and, if that is also not
+         * supported, resort to the /proc/self/fd dance. */
 
         assert(fd >= 0);
 
-        if (fchmodat2(fd, "", m, AT_EMPTY_PATH) >= 0)
+        if (fchmodat(fd, "", m, AT_EMPTY_PATH) >= 0)
+                return 0;
+        if (errno == EINVAL && fchmodat2(fd, "", m, AT_EMPTY_PATH) >= 0) /* glibc too old? */
                 return 0;
         if (!IN_SET(errno, ENOSYS, EPERM)) /* Some container managers block unknown syscalls with EPERM */
                 return -errno;
@@ -316,22 +321,7 @@ int futimens_opath(int fd, const struct timespec ts[2]) {
 
         assert(fd >= 0);
 
-        if (utimensat(fd, "", ts, AT_EMPTY_PATH) >= 0)
-                return 0;
-        if (errno != EINVAL)
-                return -errno;
-
-        /* Support for AT_EMPTY_PATH is added rather late (kernel 5.8), so fall back to going through /proc/
-         * if unavailable. */
-
-        if (utimensat(AT_FDCWD, FORMAT_PROC_FD_PATH(fd), ts, /* flags = */ 0) < 0) {
-                if (errno != ENOENT)
-                        return -errno;
-
-                return proc_fd_enoent_errno();
-        }
-
-        return 0;
+        return RET_NERRNO(utimensat(fd, "", ts, AT_EMPTY_PATH));
 }
 
 int stat_warn_permissions(const char *path, const struct stat *st) {
@@ -368,6 +358,19 @@ int fd_warn_permissions(const char *path, int fd) {
 
 int access_nofollow(const char *path, int mode) {
         return RET_NERRNO(faccessat(AT_FDCWD, path, mode, AT_SYMLINK_NOFOLLOW));
+}
+
+int access_fd(int fd, int mode) {
+        /* Like access() but operates on an already open fd */
+
+        if (fd == AT_FDCWD)
+                return RET_NERRNO(access(".", mode));
+        if (fd == XAT_FDROOT)
+                return RET_NERRNO(access("/", mode));
+
+        assert(fd >= 0);
+
+        return RET_NERRNO(faccessat(fd, "", mode, AT_EMPTY_PATH));
 }
 
 int touch_fd(int fd, usec_t stamp) {
@@ -423,76 +426,76 @@ int touch(const char *path) {
         return touch_file(path, false, USEC_INFINITY, UID_INVALID, GID_INVALID, MODE_INVALID);
 }
 
-int symlinkat_idempotent(const char *from, int atfd, const char *to, bool make_relative) {
+int symlinkat_idempotent(const char *target, int atfd, const char *linkpath, bool make_relative) {
         _cleanup_free_ char *relpath = NULL;
         int r;
 
-        assert(from);
-        assert(to);
+        assert(target);
+        assert(linkpath);
 
         if (make_relative) {
-                r = path_make_relative_parent(to, from, &relpath);
+                r = path_make_relative_parent(linkpath, target, &relpath);
                 if (r < 0)
                         return r;
 
-                from = relpath;
+                target = relpath;
         }
 
-        if (symlinkat(from, atfd, to) < 0) {
+        if (symlinkat(target, atfd, linkpath) < 0) {
                 _cleanup_free_ char *p = NULL;
 
                 if (errno != EEXIST)
                         return -errno;
 
-                r = readlinkat_malloc(atfd, to, &p);
+                r = readlinkat_malloc(atfd, linkpath, &p);
                 if (r == -EINVAL) /* Not a symlink? In that case return the original error we encountered: -EEXIST */
                         return -EEXIST;
                 if (r < 0) /* Any other error? In that case propagate it as is */
                         return r;
 
-                if (!streq(p, from)) /* Not the symlink we want it to be? In that case, propagate the original -EEXIST */
+                if (!streq(p, target)) /* Not the symlink we want it to be? In that case, propagate the original -EEXIST */
                         return -EEXIST;
         }
 
         return 0;
 }
 
-int symlinkat_atomic_full(const char *from, int atfd, const char *to, SymlinkFlags flags) {
+int symlinkat_atomic_full(const char *target, int atfd, const char *linkpath, SymlinkFlags flags) {
         int r;
 
-        assert(from);
-        assert(to);
+        assert(target);
+        assert(linkpath);
 
         _cleanup_free_ char *relpath = NULL;
         if (FLAGS_SET(flags, SYMLINK_MAKE_RELATIVE)) {
-                r = path_make_relative_parent(to, from, &relpath);
+                r = path_make_relative_parent(linkpath, target, &relpath);
                 if (r < 0)
                         return r;
 
-                from = relpath;
+                target = relpath;
         }
 
         _cleanup_free_ char *t = NULL;
-        r = tempfn_random(to, NULL, &t);
+        r = tempfn_random(linkpath, NULL, &t);
         if (r < 0)
                 return r;
 
         bool call_label_ops_post = false;
         if (FLAGS_SET(flags, SYMLINK_LABEL)) {
-                r = label_ops_pre(atfd, to, S_IFLNK);
+                r = label_ops_pre(atfd, linkpath, S_IFLNK);
                 if (r < 0)
                         return r;
 
                 call_label_ops_post = true;
         }
 
-        r = RET_NERRNO(symlinkat(from, atfd, t));
+        r = RET_NERRNO(symlinkat(target, atfd, t));
         if (call_label_ops_post)
                 RET_GATHER(r, label_ops_post(atfd, t, /* created= */ r >= 0));
         if (r < 0)
                 return r;
 
-        r = RET_NERRNO(renameat(atfd, t, atfd, to));
+        r = RET_NERRNO(renameat(atfd, t, atfd, linkpath));
         if (r < 0) {
                 (void) unlinkat(atfd, t, 0);
                 return r;
@@ -523,7 +526,7 @@ int mknodat_atomic(int atfd, const char *path, mode_t mode, dev_t dev) {
         return 0;
 }
 
-int mkfifoat_atomic(int atfd, const char *path, mode_t mode) {
+int mkfifoat_atomic(int dir_fd, const char *path, mode_t mode) {
         _cleanup_free_ char *t = NULL;
         int r;
 
@@ -534,12 +537,12 @@ int mkfifoat_atomic(int atfd, const char *path, mode_t mode) {
         if (r < 0)
                 return r;
 
-        if (mkfifoat(atfd, t, mode) < 0)
+        if (mkfifoat(dir_fd, t, mode) < 0)
                 return -errno;
 
-        r = RET_NERRNO(renameat(atfd, t, atfd, path));
+        r = RET_NERRNO(renameat(dir_fd, t, dir_fd, path));
         if (r < 0) {
-                (void) unlinkat(atfd, t, 0);
+                (void) unlinkat(dir_fd, t, 0);
                 return r;
         }
 
@@ -644,7 +647,7 @@ static int tmp_dir_internal(const char *def, const char **ret) {
                 return 0;
         }
 
-        k = is_dir(def, /* follow = */ true);
+        k = is_dir(def, /* follow= */ true);
         if (k == 0)
                 k = -ENOTDIR;
         if (k < 0)
@@ -705,29 +708,6 @@ char* unlink_and_free(char *p) {
 
         (void) unlink(p);
         return mfree(p);
-}
-
-int access_fd(int fd, int mode) {
-        assert(fd >= 0);
-
-        /* Like access() but operates on an already open fd */
-
-        if (faccessat(fd, "", mode, AT_EMPTY_PATH) >= 0)
-                return 0;
-        if (errno != EINVAL)
-                return -errno;
-
-        /* Support for AT_EMPTY_PATH is added rather late (kernel 5.8), so fall back to going through /proc/
-         * if unavailable. */
-
-        if (access(FORMAT_PROC_FD_PATH(fd), mode) < 0) {
-                if (errno != ENOENT)
-                        return -errno;
-
-                return proc_fd_enoent_errno();
-        }
-
-        return 0;
 }
 
 int unlinkat_deallocate(int fd, const char *name, UnlinkDeallocateFlags flags) {
@@ -863,10 +843,8 @@ int open_parent_at(int dir_fd, const char *path, int flags, mode_t mode) {
         /* Let's insist on O_DIRECTORY since the parent of a file or directory is a directory. Except if we open an
          * O_TMPFILE file, because in that case we are actually create a regular file below the parent directory. */
 
-        if (FLAGS_SET(flags, O_PATH))
+        if (!FLAGS_SET(flags, O_TMPFILE))
                 flags |= O_DIRECTORY;
-        else if (!FLAGS_SET(flags, O_TMPFILE))
-                flags |= O_DIRECTORY|O_RDONLY;
 
         return RET_NERRNO(openat(dir_fd, parent, flags, mode));
 }
@@ -1157,7 +1135,7 @@ int xopenat_full(int dir_fd, const char *path, int open_flags, XOpenFlags xopen_
         bool made_dir = false, made_file = false;
         int r;
 
-        assert(dir_fd >= 0 || dir_fd == AT_FDCWD);
+        assert(dir_fd >= 0 || IN_SET(dir_fd, AT_FDCWD, XAT_FDROOT));
 
         /* An inode cannot be both a directory and a regular file at the same time. */
         assert(!(FLAGS_SET(open_flags, O_DIRECTORY) && FLAGS_SET(xopen_flags, XO_REGULAR)));
@@ -1176,6 +1154,8 @@ int xopenat_full(int dir_fd, const char *path, int open_flags, XOpenFlags xopen_
          *   • if XO_REGULAR is specified will return an error if inode is not a regular file.
          *
          *   • If mode is specified as MODE_INVALID, we'll use 0755 for dirs, and 0644 for regular files.
+         *
+         *   • The dir fd can be passed as XAT_FDROOT, in which case any relative paths will be taken relative to the root fs.
          */
 
         if (mode == MODE_INVALID)
@@ -1191,6 +1171,19 @@ int xopenat_full(int dir_fd, const char *path, int open_flags, XOpenFlags xopen_
                 }
 
                 return fd_reopen(dir_fd, open_flags & ~O_NOFOLLOW);
+        }
+
+        _cleanup_close_ int _dir_fd = -EBADF;
+        if (dir_fd == XAT_FDROOT) {
+                if (path_is_absolute(path))
+                        dir_fd = AT_FDCWD;
+                else {
+                        _dir_fd = open("/", O_CLOEXEC|O_DIRECTORY|O_PATH);
+                        if (_dir_fd < 0)
+                                return -errno;
+
+                        dir_fd = _dir_fd;
+                }
         }
 
         bool call_label_ops_post = false;

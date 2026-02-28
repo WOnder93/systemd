@@ -19,6 +19,7 @@
 #include "import-util.h"
 #include "log.h"
 #include "main-func.h"
+#include "oci-util.h"
 #include "os-util.h"
 #include "pager.h"
 #include "parse-argument.h"
@@ -45,19 +46,28 @@ static ImportVerify arg_verify = IMPORT_VERIFY_SIGNATURE;
 static const char* arg_format = NULL;
 static sd_json_format_flags_t arg_json_format_flags = SD_JSON_FORMAT_OFF;
 static ImageClass arg_image_class = _IMAGE_CLASS_INVALID;
+static RuntimeScope arg_runtime_scope = RUNTIME_SCOPE_SYSTEM;
 
 #define PROGRESS_PREFIX "Total:"
 
 static int settle_image_class(void) {
+        int r;
 
         if (arg_image_class < 0) {
                 _cleanup_free_ char *j = NULL;
 
-                for (ImageClass class = 0; class < _IMAGE_CLASS_MAX; class++)
+                for (ImageClass class = 0; class < _IMAGE_CLASS_MAX; class++) {
+                        _cleanup_free_ char *root = NULL;
+
+                        r = image_root_pick(arg_runtime_scope, class, /* runtime= */ false, &root);
+                        if (r < 0)
+                                return log_error_errno(r, "Failed to pick image root: %m");
+
                         if (strextendf_with_separator(&j, ", ", "%s (downloads to %s/)",
                                                       image_class_to_string(class),
-                                                      image_root_to_string(class)) < 0)
+                                                      root) < 0)
                                 return log_oom();
+                }
 
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
                                        "No image class specified, retry with --class= set to one of: %s.", j);
@@ -760,6 +770,61 @@ static int pull_raw(int argc, char *argv[], void *userdata) {
         return transfer_image_common(bus, m);
 }
 
+static int pull_oci(int argc, char *argv[], void *userdata) {
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL;
+        _cleanup_free_ char *l = NULL;
+        const char *local, *remote;
+        sd_bus *bus = ASSERT_PTR(userdata);
+        int r;
+
+        r = settle_image_class();
+        if (r < 0)
+                return r;
+
+        remote = argv[1];
+        _cleanup_free_ char *image = NULL;
+        r = oci_ref_parse(remote, /* ret_registry= */ NULL, &image, /* ret_tag= */ NULL);
+        if (r == -EINVAL)
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Ref '%s' is not valid.", remote);
+        if (r < 0)
+                return log_error_errno(r, "Failed to determine if ref '%s' is valid.", remote);
+
+        if (argc >= 3)
+                local = argv[2];
+        else {
+                r = path_extract_filename(image, &l);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to get final component of reference: %m");
+
+                local = l;
+        }
+
+        local = empty_or_dash_to_null(local);
+
+        if (local) {
+                if (!image_name_is_valid(local))
+                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                               "Local name %s is not a suitable image name.",
+                                               local);
+        }
+
+        r = bus_message_new_method_call(bus, &m, bus_import_mgr, "PullOci");
+        if (r < 0)
+                return bus_log_create_error(r);
+
+        r = sd_bus_message_append(
+                        m,
+                        "ssst",
+                        remote,
+                        local,
+                        image_class_to_string(arg_image_class),
+                        (uint64_t) arg_import_flags & (IMPORT_FORCE|IMPORT_READ_ONLY));
+        if (r < 0)
+                return bus_log_create_error(r);
+
+        return transfer_image_common(bus, m);
+}
+
 static int list_transfers(int argc, char *argv[], void *userdata) {
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
@@ -998,6 +1063,7 @@ static int help(int argc, char *argv[], void *userdata) {
                "\n%3$sCommands:%4$s\n"
                "  pull-tar URL [NAME]         Download a TAR container image\n"
                "  pull-raw URL [NAME]         Download a RAW container or VM image\n"
+               "  pull-oci REF [NAME]         Download an OCI container image\n"
                "  import-tar FILE [NAME]      Import a local TAR container image\n"
                "  import-raw FILE [NAME]      Import a local RAW container or VM image\n"
                "  import-fs DIRECTORY [NAME]  Import a local directory container image\n"
@@ -1014,6 +1080,8 @@ static int help(int argc, char *argv[], void *userdata) {
                "     --no-ask-password        Do not ask for system passwords\n"
                "  -H --host=[USER@]HOST       Operate on remote host\n"
                "  -M --machine=CONTAINER      Operate on local container\n"
+               "     --system                 Connect to system machine manager\n"
+               "     --user                   Connect to user machine manager\n"
                "     --read-only              Create read-only image\n"
                "  -q --quiet                  Suppress output\n"
                "     --json=pretty|short|off  Generate JSON output\n"
@@ -1024,12 +1092,15 @@ static int help(int argc, char *argv[], void *userdata) {
                "     --format=xz|gzip|bzip2|zstd\n"
                "                              Desired output format for export\n"
                "     --force                  Install image even if already exists\n"
-               "  -m --class=machine          Install as machine image\n"
-               "  -P --class=portable         Install as portable service image\n"
-               "  -S --class=sysext           Install as system extension image\n"
-               "  -C --class=confext          Install as configuration extension image\n"
+               "     --class=TYPE             Install as the specified TYPE\n"
+               "  -m                          Install as --class=machine, machine image\n"
+               "  -P                          Install as --class=portable,\n"
+               "                              portable service image\n"
+               "  -S                          Install as --class=sysext, system extension image\n"
+               "  -C                          Install as --class=confext,\n"
+               "                              configuration extension image\n"
                "     --keep-download=BOOL     Control whether to keep pristine copy of download\n"
-               "  -N                          Shortcut for --keep-download=no\n"
+               "  -N                          Same as --keep-download=no\n"
                "\nSee the %2$s for details.\n",
                program_invocation_short_name,
                link,
@@ -1055,6 +1126,8 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_FORMAT,
                 ARG_CLASS,
                 ARG_KEEP_DOWNLOAD,
+                ARG_SYSTEM,
+                ARG_USER,
         };
 
         static const struct option options[] = {
@@ -1073,6 +1146,8 @@ static int parse_argv(int argc, char *argv[]) {
                 { "format",          required_argument, NULL, ARG_FORMAT          },
                 { "class",           required_argument, NULL, ARG_CLASS           },
                 { "keep-download",   required_argument, NULL, ARG_KEEP_DOWNLOAD   },
+                { "system",          no_argument,       NULL, ARG_SYSTEM          },
+                { "user",            no_argument,       NULL, ARG_USER            },
                 {}
         };
 
@@ -1127,10 +1202,8 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case ARG_VERIFY:
-                        if (streq(optarg, "help")) {
-                                DUMP_STRING_TABLE(import_verify, ImportVerify, _IMPORT_VERIFY_MAX);
-                                return 0;
-                        }
+                        if (streq(optarg, "help"))
+                                return DUMP_STRING_TABLE(import_verify, ImportVerify, _IMPORT_VERIFY_MAX);
 
                         r = import_verify_from_string(optarg);
                         if (r < 0)
@@ -1200,6 +1273,14 @@ static int parse_argv(int argc, char *argv[]) {
                         arg_import_flags_mask |= IMPORT_PULL_KEEP_DOWNLOAD;
                         break;
 
+                case ARG_USER:
+                        arg_runtime_scope = RUNTIME_SCOPE_USER;
+                        break;
+
+                case ARG_SYSTEM:
+                        arg_runtime_scope = RUNTIME_SCOPE_SYSTEM;
+                        break;
+
                 case '?':
                         return -EINVAL;
 
@@ -1221,6 +1302,7 @@ static int importctl_main(int argc, char *argv[], sd_bus *bus) {
                 { "export-tar",      2,        3,        0,            export_tar        },
                 { "export-raw",      2,        3,        0,            export_raw        },
                 { "pull-tar",        2,        3,        0,            pull_tar          },
+                { "pull-oci",        2,        3,        0,            pull_oci          },
                 { "pull-raw",        2,        3,        0,            pull_raw          },
                 { "list-transfers",  VERB_ANY, 1,        VERB_DEFAULT, list_transfers    },
                 { "cancel-transfer", 2,        VERB_ANY, 0,            cancel_transfer   },
@@ -1242,9 +1324,9 @@ static int run(int argc, char *argv[]) {
         if (r <= 0)
                 return r;
 
-        r = bus_connect_transport(arg_transport, arg_host, RUNTIME_SCOPE_SYSTEM, &bus);
+        r = bus_connect_transport(arg_transport, arg_host, arg_runtime_scope, &bus);
         if (r < 0)
-                return bus_log_connect_error(r, arg_transport, RUNTIME_SCOPE_SYSTEM);
+                return bus_log_connect_error(r, arg_transport, arg_runtime_scope);
 
         (void) sd_bus_set_allow_interactive_authorization(bus, arg_ask_password);
 

@@ -5,7 +5,7 @@
 
 #include "bitfield.h"
 #include "rlimit-util.h"
-#include "forward.h"
+#include "shared-forward.h"
 
 typedef enum UserDisposition {
         USER_INTRINSIC,   /* root and nobody */
@@ -418,8 +418,7 @@ typedef struct UserRecord {
 } UserRecord;
 
 UserRecord* user_record_new(void);
-UserRecord* user_record_ref(UserRecord *h);
-UserRecord* user_record_unref(UserRecord *h);
+DECLARE_TRIVIAL_REF_UNREF_FUNC(UserRecord, user_record);
 
 DEFINE_TRIVIAL_CLEANUP_FUNC(UserRecord*, user_record_unref);
 
@@ -469,7 +468,7 @@ uint32_t user_record_dev_shm_limit_scale(UserRecord *h);
 const char **user_record_self_modifiable_fields(UserRecord *h);
 const char **user_record_self_modifiable_blobs(UserRecord *h);
 const char **user_record_self_modifiable_privileged(UserRecord *h);
-int user_record_self_changes_allowed(UserRecord *current, UserRecord *new);
+int user_record_self_changes_allowed(UserRecord *current, UserRecord *incoming);
 
 int user_record_build_image_path(UserStorage storage, const char *user_name_and_realm, char **ret);
 
@@ -513,6 +512,7 @@ typedef struct UserDBMatch {
                 uid_t uid_max;
                 gid_t gid_max;
         };
+        sd_id128_t uuid;
 } UserDBMatch;
 
 #define USER_DISPOSITION_MASK_ALL ((UINT64_C(1) << _USER_DISPOSITION_MAX) - UINT64_C(1))
@@ -522,6 +522,7 @@ typedef struct UserDBMatch {
                 .disposition_mask = USER_DISPOSITION_MASK_ALL,  \
                 .uid_min = 0,                                   \
                 .uid_max = UID_INVALID-1,                       \
+                .uuid = SD_ID128_NULL,                          \
        }
 
 /* Maybe useful when we want to resolve root and system user/group but want to refuse nobody user/group. */
@@ -544,11 +545,8 @@ bool user_record_matches_user_name(const UserRecord *u, const char *username);
 
 int json_dispatch_dispositions_mask(const char *name, sd_json_variant *variant, sd_json_dispatch_flags_t flags, void *userdata);
 
-const char* user_storage_to_string(UserStorage t) _const_;
-UserStorage user_storage_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(user_storage, UserStorage);
 
-const char* user_disposition_to_string(UserDisposition t) _const_;
-UserDisposition user_disposition_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(user_disposition, UserDisposition);
 
-const char* auto_resize_mode_to_string(AutoResizeMode m) _const_;
-AutoResizeMode auto_resize_mode_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(auto_resize_mode, AutoResizeMode);

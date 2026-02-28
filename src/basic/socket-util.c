@@ -669,26 +669,6 @@ static const char* const netlink_family_table[] = {
 
 DEFINE_STRING_TABLE_LOOKUP_WITH_FALLBACK(netlink_family, int, INT_MAX);
 
-static const char* const socket_address_bind_ipv6_only_table[_SOCKET_ADDRESS_BIND_IPV6_ONLY_MAX] = {
-        [SOCKET_ADDRESS_DEFAULT] = "default",
-        [SOCKET_ADDRESS_BOTH] = "both",
-        [SOCKET_ADDRESS_IPV6_ONLY] = "ipv6-only"
-};
-
-DEFINE_STRING_TABLE_LOOKUP(socket_address_bind_ipv6_only, SocketAddressBindIPv6Only);
-
-SocketAddressBindIPv6Only socket_address_bind_ipv6_only_or_bool_from_string(const char *n) {
-        int r;
-
-        r = parse_boolean(n);
-        if (r > 0)
-                return SOCKET_ADDRESS_IPV6_ONLY;
-        if (r == 0)
-                return SOCKET_ADDRESS_BOTH;
-
-        return socket_address_bind_ipv6_only_from_string(n);
-}
-
 bool sockaddr_equal(const union sockaddr_union *a, const union sockaddr_union *b) {
         assert(a);
         assert(b);
@@ -990,53 +970,6 @@ int getpeerpidref(int fd, PidRef *ret) {
         return pidref_set_pidfd_consume(ret, pidfd);
 }
 
-ssize_t send_many_fds_iov_sa(
-                int transport_fd,
-                int *fds_array, size_t n_fds_array,
-                const struct iovec *iov, size_t iovlen,
-                const struct sockaddr *sa, socklen_t len,
-                int flags) {
-
-        _cleanup_free_ struct cmsghdr *cmsg = NULL;
-        struct msghdr mh = {
-                .msg_name = (struct sockaddr*) sa,
-                .msg_namelen = len,
-                .msg_iov = (struct iovec *)iov,
-                .msg_iovlen = iovlen,
-        };
-        ssize_t k;
-
-        assert(transport_fd >= 0);
-        assert(fds_array || n_fds_array == 0);
-
-        /* The kernel will reject sending more than SCM_MAX_FD FDs at once */
-        if (n_fds_array > SCM_MAX_FD)
-                return -E2BIG;
-
-        /* We need either an FD array or data to send. If there's nothing, return an error. */
-        if (n_fds_array == 0 && !iov)
-                return -EINVAL;
-
-        if (n_fds_array > 0) {
-                mh.msg_controllen = CMSG_SPACE(sizeof(int) * n_fds_array);
-                mh.msg_control = cmsg = malloc(mh.msg_controllen);
-                if (!cmsg)
-                        return -ENOMEM;
-
-                *cmsg = (struct cmsghdr) {
-                        .cmsg_len = CMSG_LEN(sizeof(int) * n_fds_array),
-                        .cmsg_level = SOL_SOCKET,
-                        .cmsg_type = SCM_RIGHTS,
-                };
-                memcpy(CMSG_DATA(cmsg), fds_array, sizeof(int) * n_fds_array);
-        }
-        k = sendmsg(transport_fd, &mh, MSG_NOSIGNAL | flags);
-        if (k < 0)
-                return (ssize_t) -errno;
-
-        return k;
-}
-
 ssize_t send_one_fd_iov_sa(
                 int transport_fd,
                 int fd,
@@ -1090,74 +1023,6 @@ int send_one_fd_sa(
         assert(fd >= 0);
 
         return (int) send_one_fd_iov_sa(transport_fd, fd, NULL, 0, sa, len, flags);
-}
-
-ssize_t receive_many_fds_iov(
-                int transport_fd,
-                struct iovec *iov, size_t iovlen,
-                int **ret_fds_array, size_t *ret_n_fds_array,
-                int flags) {
-
-        CMSG_BUFFER_TYPE(CMSG_SPACE(sizeof(int) * SCM_MAX_FD)) control;
-        struct msghdr mh = {
-                .msg_control = &control,
-                .msg_controllen = sizeof(control),
-                .msg_iov = iov,
-                .msg_iovlen = iovlen,
-        };
-        _cleanup_free_ int *fds_array = NULL;
-        size_t n_fds_array = 0;
-        struct cmsghdr *cmsg;
-        ssize_t k;
-
-        assert(transport_fd >= 0);
-        assert(ret_fds_array);
-        assert(ret_n_fds_array);
-
-        /*
-         * Receive many FDs via @transport_fd. We don't care for the transport-type. We retrieve all the FDs
-         * at once. This is best used in combination with send_many_fds().
-         */
-
-        k = recvmsg_safe(transport_fd, &mh, MSG_CMSG_CLOEXEC | flags);
-        if (k < 0)
-                return k;
-
-        CMSG_FOREACH(cmsg, &mh)
-                if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
-                        size_t n = (cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int);
-
-                        if (!GREEDY_REALLOC_APPEND(fds_array, n_fds_array, CMSG_TYPED_DATA(cmsg, int), n)) {
-                                cmsg_close_all(&mh);
-                                return -ENOMEM;
-                        }
-                }
-
-        if (n_fds_array == 0) {
-                cmsg_close_all(&mh);
-
-                /* If didn't receive an FD or any data, return an error. */
-                if (k == 0)
-                        return -EIO;
-        }
-
-        *ret_fds_array = TAKE_PTR(fds_array);
-        *ret_n_fds_array = n_fds_array;
-
-        return k;
-}
-
-int receive_many_fds(int transport_fd, int **ret_fds_array, size_t *ret_n_fds_array, int flags) {
-        ssize_t k;
-
-        k = receive_many_fds_iov(transport_fd, NULL, 0, ret_fds_array, ret_n_fds_array, flags);
-        if (k == 0)
-                return 0;
-
-        /* k must be negative, since receive_many_fds_iov() only returns a positive value if data was received
-         * through the iov. */
-        assert(k < 0);
-        return (int) k;
 }
 
 ssize_t receive_one_fd_iov(
@@ -1283,12 +1148,10 @@ int flush_accept(int fd) {
                 int cfd;
 
                 r = fd_wait_for_event(fd, POLLIN, 0);
-                if (r < 0) {
-                        if (r == -EINTR)
-                                continue;
-
+                if (r == -EINTR)
+                        continue;
+                if (r < 0)
                         return r;
-                }
                 if (r == 0)
                         return 0;
 
@@ -1325,12 +1188,10 @@ ssize_t flush_mqueue(int fd) {
                 ssize_t l;
 
                 r = fd_wait_for_event(fd, POLLIN, /* timeout= */ 0);
-                if (r < 0) {
-                        if (r == -EINTR)
-                                continue;
-
+                if (r == -EINTR)
+                        continue;
+                if (r < 0)
                         return r;
-                }
                 if (r == 0)
                         return count;
 
@@ -1344,7 +1205,7 @@ ssize_t flush_mqueue(int fd) {
                                 return -ENOMEM;
                 }
 
-                l = mq_receive(fd, buf, attr.mq_msgsize, /* msg_prio = */ NULL);
+                l = mq_receive(fd, buf, attr.mq_msgsize, /* msg_prio= */ NULL);
                 if (l < 0) {
                         if (errno == EINTR)
                                 continue;
@@ -1869,7 +1730,7 @@ int vsock_parse_cid(const char *s, unsigned *ret) {
 int socket_address_parse_vsock(SocketAddress *ret_address, const char *s) {
         /* AF_VSOCK socket in vsock:cid:port notation */
         _cleanup_free_ char *n = NULL;
-        char *e, *cid_start;
+        const char *e, *cid_start;
         unsigned port, cid;
         int type, r;
 
@@ -1928,9 +1789,19 @@ int vsock_get_local_cid(unsigned *ret) {
                 return log_debug_errno(errno, "Failed to open %s: %m", "/dev/vsock");
 
         unsigned tmp;
-        if (ioctl(vsock_fd, IOCTL_VM_SOCKETS_GET_LOCAL_CID, ret ?: &tmp) < 0)
+        if (ioctl(vsock_fd, IOCTL_VM_SOCKETS_GET_LOCAL_CID, &tmp) < 0)
                 return log_debug_errno(errno, "Failed to query local AF_VSOCK CID: %m");
+        log_debug("Local AF_VSOCK CID: %u", tmp);
 
+        /* If ret == NULL, we're just want to check if AF_VSOCK is available, so accept
+         * any address. Otherwise, filter out special addresses that are cannot be used
+         * to identify _this_ machine from the outside. */
+        if (ret && IN_SET(tmp, VMADDR_CID_LOCAL, VMADDR_CID_HOST))
+                return log_debug_errno(SYNTHETIC_ERRNO(EADDRNOTAVAIL),
+                                       "IOCTL_VM_SOCKETS_GET_LOCAL_CID returned special value (%u), ignoring.", tmp);
+
+        if (ret)
+                *ret = tmp;
         return 0;
 }
 

@@ -144,15 +144,15 @@
 #define UNIQ_T(x, uniq) CONCATENATE(__unique_prefix_, CONCATENATE(x, uniq))
 #define UNIQ __COUNTER__
 
-/* Note that this works differently from pthread_once(): this macro does
- * not synchronize code execution, i.e. code that is run conditionalized
- * on this macro will run concurrently to all other code conditionalized
- * the same way, there's no ordering or completion enforced. */
+/* The macro is true when the code block is called first time, and is false for the second and later times.
+ * Note that this works differently from pthread_once(): this macro does not synchronize code execution, i.e.
+ * code that is run conditionalized on this macro will run concurrently to all other code conditionalized the
+ * same way, there's no ordering or completion enforced. */
 #define ONCE __ONCE(UNIQ_T(_once_, UNIQ))
-#define __ONCE(o)                                                  \
-        ({                                                         \
-                static bool (o) = false;                           \
-                __atomic_exchange_n(&(o), true, __ATOMIC_SEQ_CST); \
+#define __ONCE(o)                                                       \
+        ({                                                              \
+                static bool (o) = false;                                \
+                !__atomic_exchange_n(&(o), true, __ATOMIC_SEQ_CST);     \
         })
 
 #define U64_KB UINT64_C(1024)
@@ -350,11 +350,13 @@ assert_cc(sizeof(long long) == sizeof(intmax_t));
 #define CASE_F_18(X, ...) case X: CASE_F_17( __VA_ARGS__)
 #define CASE_F_19(X, ...) case X: CASE_F_18( __VA_ARGS__)
 #define CASE_F_20(X, ...) case X: CASE_F_19( __VA_ARGS__)
+#define CASE_F_21(X, ...) case X: CASE_F_20( __VA_ARGS__)
+#define CASE_F_22(X, ...) case X: CASE_F_21( __VA_ARGS__)
 
-#define GET_CASE_F(_1,_2,_3,_4,_5,_6,_7,_8,_9,_10,_11,_12,_13,_14,_15,_16,_17,_18,_19,_20,NAME,...) NAME
+#define GET_CASE_F(_1,_2,_3,_4,_5,_6,_7,_8,_9,_10,_11,_12,_13,_14,_15,_16,_17,_18,_19,_20,_21,_22,NAME,...) NAME
 #define FOR_EACH_MAKE_CASE(...) \
-        GET_CASE_F(__VA_ARGS__,CASE_F_20,CASE_F_19,CASE_F_18,CASE_F_17,CASE_F_16,CASE_F_15,CASE_F_14,CASE_F_13,CASE_F_12,CASE_F_11, \
-                               CASE_F_10,CASE_F_9,CASE_F_8,CASE_F_7,CASE_F_6,CASE_F_5,CASE_F_4,CASE_F_3,CASE_F_2,CASE_F_1) \
+        GET_CASE_F(__VA_ARGS__,CASE_F_22,CASE_F_21,CASE_F_20,CASE_F_19,CASE_F_18,CASE_F_17,CASE_F_16,CASE_F_15,CASE_F_14,CASE_F_13,CASE_F_12, \
+                               CASE_F_11,CASE_F_10,CASE_F_9,CASE_F_8,CASE_F_7,CASE_F_6,CASE_F_5,CASE_F_4,CASE_F_3,CASE_F_2,CASE_F_1) \
                    (__VA_ARGS__)
 
 #define IN_SET(x, first, ...)                                           \
@@ -363,7 +365,7 @@ assert_cc(sizeof(long long) == sizeof(intmax_t));
                 /* If the build breaks in the line below, you need to extend the case macros. We use typeof(+x) \
                  * here to widen the type of x if it is a bit-field as this would otherwise be illegal. */      \
                 static const typeof(+x) __assert_in_set[] _unused_ = { first, __VA_ARGS__ }; \
-                assert_cc(ELEMENTSOF(__assert_in_set) <= 20);           \
+                assert_cc(ELEMENTSOF(__assert_in_set) <= 22);           \
                 switch (x) {                                            \
                 FOR_EACH_MAKE_CASE(first, __VA_ARGS__)                  \
                         _found = true;                                  \
@@ -397,7 +399,7 @@ assert_cc(sizeof(long long) == sizeof(intmax_t));
 #define STRLEN(x) (sizeof(""x"") - sizeof(typeof(x[0])))
 
 DISABLE_WARNING_REDUNDANT_DECLS;
-void free(void *p);
+void free(void *p); /* NOLINT (readability-redundant-declaration) */
 REENABLE_WARNING;
 
 #define mfree(memory)                           \
@@ -482,3 +484,10 @@ assert_cc(STRLEN(__FILE__) > STRLEN(RELATIVE_SOURCE_PATH) + 1);
 #else
 #  define ENUM_TYPE_S64(id) id
 #endif
+
+/* This macro is used to have a const-returning and non-const returning version of a function based on
+ * whether its first argument is const or not (e.g. strstr()). */
+#define const_generic(ptr, call)                              \
+        _Generic(0 ? (ptr) : (void*) 1,                       \
+                 const void*: (const typeof(*call)*) (call),  \
+                 void*: (call))

@@ -210,23 +210,21 @@ static int finish_item(
 }
 
 int catalog_file_lang(const char *filename, char **ret) {
-        char *beg, *end, *lang;
-
         assert(filename);
         assert(ret);
 
-        end = endswith(filename, ".catalog");
+        const char *end = endswith(filename, ".catalog");
         if (!end)
                 return 0;
 
-        beg = end - 1;
+        const char *beg = end - 1;
         while (beg > filename && !IN_SET(*beg, '.', '/') && end - beg < 32)
                 beg--;
 
         if (*beg != '.' || end <= beg + 1)
                 return 0;
 
-        lang = strndup(beg + 1, end - beg - 1);
+        char *lang = strndup(beg + 1, end - beg - 1);
         if (!lang)
                 return -ENOMEM;
 
@@ -455,7 +453,9 @@ int catalog_update(const char *database, const char *root, const char* const *di
 
         CLEANUP_ARRAY(files, n_files, conf_file_free_many);
 
-        r = conf_files_list_strv_full(".catalog", root, CONF_FILES_REGULAR | CONF_FILES_FILTER_MASKED, dirs, &files, &n_files);
+        r = conf_files_list_strv_full(".catalog", root,
+                                      CONF_FILES_REGULAR | CONF_FILES_FILTER_MASKED | CONF_FILES_WARN,
+                                      dirs, &files, &n_files);
         if (r < 0)
                 return log_error_errno(r, "Failed to get catalog files: %m");
 
@@ -553,7 +553,8 @@ static int open_mmap(const char *database, int *ret_fd, struct stat *ret_st, voi
 }
 
 static const char* find_id(const void *p, sd_id128_t id) {
-        CatalogItem *f = NULL, key = { .id = id };
+        CatalogItem key = { .id = id };
+        const CatalogItem *f = NULL;
         const CatalogHeader *h = ASSERT_PTR(p);
         const char *loc;
 

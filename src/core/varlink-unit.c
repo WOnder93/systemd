@@ -3,19 +3,23 @@
 #include "sd-json.h"
 
 #include "bitfield.h"
+#include "bus-polkit.h"
 #include "cgroup.h"
 #include "condition.h"
+#include "dbus-job.h"
 #include "execute.h"
+#include "format-util.h"
 #include "install.h"
 #include "json-util.h"
 #include "manager.h"
+#include "path-util.h"
 #include "pidref.h"
+#include "selinux-access.h"
 #include "set.h"
 #include "strv.h"
 #include "unit.h"
-#include "unit-name.h"
 #include "varlink-cgroup.h"
-#include "varlink-common.h"
+#include "varlink-execute.h"
 #include "varlink-unit.h"
 #include "varlink-util.h"
 
@@ -184,8 +188,8 @@ static int unit_context_build_json(sd_json_variant **ret, const char *name, void
                         SD_JSON_BUILD_PAIR_BOOLEAN("Perpetual", u->perpetual),
                         SD_JSON_BUILD_PAIR_BOOLEAN("DebugInvocation", u->debug_invocation),
 
-                        /* CGroup */
-                        JSON_BUILD_PAIR_CALLBACK_NON_NULL("CGroup", unit_cgroup_context_build_json, u));
+                        JSON_BUILD_PAIR_CALLBACK_NON_NULL("CGroup", unit_cgroup_context_build_json, u),
+                        JSON_BUILD_PAIR_CALLBACK_NON_NULL("Exec", unit_exec_context_build_json, u));
 
         // TODO follow up PRs:
         // JSON_BUILD_PAIR_CALLBACK_NON_NULL("Exec", exec_context_build_json, u)
@@ -295,7 +299,7 @@ static int unit_runtime_build_json(sd_json_variant **ret, const char *name, void
                         SD_JSON_BUILD_PAIR_BOOLEAN("CanIsolate", unit_can_isolate_refuse_manual(u)),
                         JSON_BUILD_PAIR_CALLBACK_NON_NULL("CanClean", can_clean_build_json, u),
                         SD_JSON_BUILD_PAIR_BOOLEAN("CanFreeze", unit_can_freeze(u)),
-                        SD_JSON_BUILD_PAIR_BOOLEAN("CanLiveMount", unit_can_live_mount(u, /* error= */ NULL) >= 0),
+                        SD_JSON_BUILD_PAIR_BOOLEAN("CanLiveMount", unit_can_live_mount(u, /* reterr_error= */ NULL) >= 0),
                         JSON_BUILD_PAIR_UNSIGNED_NON_ZERO("JobId", u->job ? u->job->id : 0),
                         SD_JSON_BUILD_PAIR_BOOLEAN("NeedDaemonReload", unit_need_daemon_reload(u)),
                         SD_JSON_BUILD_PAIR_BOOLEAN("ConditionResult", u->condition_result),
@@ -308,24 +312,28 @@ static int unit_runtime_build_json(sd_json_variant **ret, const char *name, void
                         JSON_BUILD_PAIR_CALLBACK_NON_NULL("CGroup", unit_cgroup_runtime_build_json, u));
 }
 
-static int list_unit_one(sd_varlink *link, Unit *unit, bool more) {
-        _cleanup_(sd_json_variant_unrefp) sd_json_variant *v = NULL;
+static int list_unit_one(sd_varlink *link, Unit *unit) {
+        assert(link);
+        assert(unit);
+
+        return sd_varlink_replybo(link,
+                        SD_JSON_BUILD_PAIR_CALLBACK("context", unit_context_build_json, unit),
+                        SD_JSON_BUILD_PAIR_CALLBACK("runtime", unit_runtime_build_json, unit));
+}
+
+static int list_unit_one_with_selinux_access_check(sd_varlink *link, Unit *unit) {
         int r;
 
         assert(link);
         assert(unit);
 
-        r = sd_json_buildo(
-                &v,
-                SD_JSON_BUILD_PAIR_CALLBACK("context", unit_context_build_json, unit),
-                SD_JSON_BUILD_PAIR_CALLBACK("runtime", unit_runtime_build_json, unit));
+        r = mac_selinux_unit_access_check_varlink(unit, link, "status");
         if (r < 0)
-                return r;
+                /* If mac_selinux_unit_access_check_varlink() returned a error,
+                 * it means that SELinux enforce is on. It also does all the logging(). */
+                return sd_varlink_error(link, SD_VARLINK_ERROR_PERMISSION_DENIED, NULL);
 
-        if (more)
-                return sd_varlink_notify(link, v);
-
-        return sd_varlink_reply(link, v);
+        return list_unit_one(link, unit);
 }
 
 static int lookup_unit_by_pidref(sd_varlink *link, Manager *manager, PidRef *pidref, Unit **ret_unit) {
@@ -354,9 +362,44 @@ static int lookup_unit_by_pidref(sd_varlink *link, Manager *manager, PidRef *pid
         return 0;
 }
 
+static int load_unit_and_check(sd_varlink *link, Manager *manager, const char *name, Unit **ret_unit) {
+        Unit *unit;
+        int r;
+
+        assert(link);
+        assert(manager);
+        assert(name);
+        assert(ret_unit);
+
+        r = manager_load_unit(manager, name, /* path= */ NULL, /* e= */ NULL, &unit);
+        if (r < 0)
+                return r;
+
+        /* manager_load_unit() will create an object regardless of whether the unit actually exists, so
+         * check the state and refuse if it's not in a good state. */
+        if (IN_SET(unit->load_state, UNIT_NOT_FOUND, UNIT_STUB, UNIT_MERGED))
+                return sd_varlink_error(link, "io.systemd.Unit.NoSuchUnit", NULL);
+        if (unit->load_state == UNIT_BAD_SETTING)
+                return sd_varlink_error(link, "io.systemd.Unit.UnitError", NULL);
+        if (unit->load_state == UNIT_ERROR)
+                return sd_varlink_errorbo(
+                        link,
+                        SD_VARLINK_ERROR_SYSTEM,
+                        SD_JSON_BUILD_PAIR_STRING("origin", "linux"),
+                        SD_JSON_BUILD_PAIR_INTEGER("errno", unit->load_error),
+                        JSON_BUILD_PAIR_STRING_NON_EMPTY("errnoName", "io.systemd.Unit.UnitError"));
+        if (unit->load_state == UNIT_MASKED)
+                return sd_varlink_error(link, "io.systemd.Unit.UnitMasked", NULL);
+        assert(UNIT_IS_LOAD_COMPLETE(unit->load_state));
+
+        *ret_unit = unit;
+        return 0;
+}
+
 typedef struct UnitLookupParameters {
-        const char *name;
+        const char *name, *cgroup;
         PidRef pidref;
+        sd_id128_t invocation_id;
 } UnitLookupParameters;
 
 static void unit_lookup_parameters_done(UnitLookupParameters *p) {
@@ -364,10 +407,88 @@ static void unit_lookup_parameters_done(UnitLookupParameters *p) {
         pidref_done(&p->pidref);
 }
 
+static int varlink_error_conflict_lookup_parameters(sd_varlink *v, const UnitLookupParameters *p) {
+        log_debug_errno(
+                        ESRCH,
+                        "Searching unit by lookup parameters name='%s' pid="PID_FMT" cgroup='%s' invocationID='%s' resulted in multiple different units",
+                        p->name,
+                        p->pidref.pid,
+                        p->cgroup,
+                        sd_id128_is_null(p->invocation_id) ? "" : SD_ID128_TO_UUID_STRING(p->invocation_id));
+
+        return varlink_error_no_such_unit(v, /* name= */ NULL);
+}
+
+static int lookup_unit_by_parameters(
+                sd_varlink *link,
+                Manager *manager,
+                UnitLookupParameters *p,
+                Unit **ret) {
+
+        /* The function can return ret_unit=NULL if no lookup parameters provided */
+        Unit *unit = NULL;
+        int r;
+
+        assert(link);
+        assert(manager);
+        assert(p);
+        assert(ret);
+
+        if (p->name) {
+                r = load_unit_and_check(link, manager, p->name, &unit);
+                if (r < 0)
+                        return r;
+        }
+
+        if (pidref_is_set_or_automatic(&p->pidref)) {
+                Unit *pid_unit;
+
+                r = lookup_unit_by_pidref(link, manager, &p->pidref, &pid_unit);
+                if (r == -EINVAL)
+                        return sd_varlink_error_invalid_parameter_name(link, "pid");
+                if (r == -ESRCH)
+                        return varlink_error_no_such_unit(link, "pid");
+                if (r < 0)
+                        return r;
+                if (unit && pid_unit != unit)
+                        return varlink_error_conflict_lookup_parameters(link, p);
+
+                unit = pid_unit;
+        }
+
+        if (p->cgroup) {
+                if (!path_is_absolute(p->cgroup) || !path_is_normalized(p->cgroup))
+                        return sd_varlink_error_invalid_parameter_name(link, "cgroup");
+
+                Unit *cgroup_unit = manager_get_unit_by_cgroup(manager, p->cgroup);
+                if (!cgroup_unit)
+                        return varlink_error_no_such_unit(link, "cgroup");
+                if (unit && cgroup_unit != unit)
+                        return varlink_error_conflict_lookup_parameters(link, p);
+
+                unit = cgroup_unit;
+        }
+
+        if (!sd_id128_is_null(p->invocation_id)) {
+                Unit *id128_unit = hashmap_get(manager->units_by_invocation_id, &p->invocation_id);
+                if (!id128_unit)
+                        return varlink_error_no_such_unit(link, "invocationID");
+                if (unit && id128_unit != unit)
+                        return varlink_error_conflict_lookup_parameters(link, p);
+
+                unit = id128_unit;
+        }
+
+        *ret = unit;
+        return !!unit;
+}
+
 int vl_method_list_units(sd_varlink *link, sd_json_variant *parameters, sd_varlink_method_flags_t flags, void *userdata) {
         static const sd_json_dispatch_field dispatch_table[] = {
-                { "name", SD_JSON_VARIANT_STRING,        json_dispatch_const_unit_name, offsetof(UnitLookupParameters, name),   0 /* allows UNIT_NAME_PLAIN | UNIT_NAME_INSTANCE */ },
-                { "pid",  _SD_JSON_VARIANT_TYPE_INVALID, json_dispatch_pidref,          offsetof(UnitLookupParameters, pidref), SD_JSON_RELAX /* allows PID_AUTOMATIC */            },
+                { "name",         SD_JSON_VARIANT_STRING,        json_dispatch_const_unit_name, offsetof(UnitLookupParameters, name),          0 /* allows UNIT_NAME_PLAIN | UNIT_NAME_INSTANCE */ },
+                { "pid",          _SD_JSON_VARIANT_TYPE_INVALID, json_dispatch_pidref,          offsetof(UnitLookupParameters, pidref),        SD_JSON_RELAX /* allows PID_AUTOMATIC */            },
+                { "cgroup",       SD_JSON_VARIANT_STRING,        json_dispatch_const_path,      offsetof(UnitLookupParameters, cgroup),        SD_JSON_STRICT /* require normalized path */        },
+                { "invocationID", SD_JSON_VARIANT_STRING,        sd_json_dispatch_id128,        offsetof(UnitLookupParameters, invocation_id), 0                                                   },
                 {}
         };
 
@@ -375,6 +496,8 @@ int vl_method_list_units(sd_varlink *link, sd_json_variant *parameters, sd_varli
          _cleanup_(unit_lookup_parameters_done) UnitLookupParameters p = {
                  .pidref = PIDREF_NULL,
         };
+        Unit *unit;
+        const char *k;
         int r;
 
         assert(link);
@@ -384,50 +507,182 @@ int vl_method_list_units(sd_varlink *link, sd_json_variant *parameters, sd_varli
         if (r != 0)
                 return r;
 
-        if (p.name) {
-                Unit *unit = manager_get_unit(manager, p.name);
-                if (!unit)
-                        return sd_varlink_error(link, VARLINK_ERROR_UNIT_NO_SUCH_UNIT, NULL);
-
-                return list_unit_one(link, unit, /* more = */ false);
-        }
-
-        if (pidref_is_set(&p.pidref) || pidref_is_automatic(&p.pidref)) {
-                Unit *unit;
-                r = lookup_unit_by_pidref(link, manager, &p.pidref, &unit);
-                if (r == -EINVAL)
-                        return sd_varlink_error_invalid_parameter_name(link, "pid");
-                if (r == -ESRCH)
-                        return sd_varlink_error(link, VARLINK_ERROR_UNIT_NO_SUCH_UNIT, NULL);
-                if (r < 0)
-                        return r;
-
-                return list_unit_one(link, unit, /* more = */ false);
-        }
-
-        // TODO lookup by invocationID, CGroup
+        r = lookup_unit_by_parameters(link, manager, &p, &unit);
+        if (r < 0)
+                return r;
+        if (r > 0)
+                return list_unit_one_with_selinux_access_check(link, unit);
 
         if (!FLAGS_SET(flags, SD_VARLINK_METHOD_MORE))
                 return sd_varlink_error(link, SD_VARLINK_ERROR_EXPECTED_MORE, NULL);
 
-        const char *k;
-        Unit *u, *previous = NULL;
-        HASHMAP_FOREACH_KEY(u, k, manager->units) {
+        r = varlink_set_sentinel(link, "io.systemd.Manager.NoSuchUnit");
+        if (r < 0)
+                return r;
+
+        HASHMAP_FOREACH_KEY(unit, k, manager->units) {
                 /* ignore aliases */
-                if (k != u->id)
+                if (k != unit->id)
                         continue;
 
-                if (previous) {
-                        r = list_unit_one(link, previous, /* more = */ true);
-                        if (r < 0)
-                                return r;
-                }
-
-                previous = u;
+                r = list_unit_one(link, unit);
+                if (r < 0)
+                        return r;
         }
 
-        if (previous)
-                return list_unit_one(link, previous, /* more = */ false);
+        return 0;
+}
 
-        return sd_varlink_error(link, "io.systemd.Manager.NoSuchUnit", NULL);
+int varlink_unit_queue_job_one(
+                Unit *u,
+                JobType type,
+                JobMode mode,
+                bool reload_if_possible,
+                uint32_t *ret_job_id,
+                sd_bus_error *reterr_bus_error) {
+
+        int r;
+
+        assert(u);
+
+        r = unit_queue_job_check_and_mangle_type(u, &type, reload_if_possible, reterr_bus_error);
+        if (r < 0)
+                return r;
+
+        Job *j;
+        r = manager_add_job(u->manager, type, u, mode, reterr_bus_error, &j);
+        if (r < 0)
+                return r;
+
+        /* Before we send the method reply, force out the announcement JobNew for this job */
+        bus_job_send_pending_change_signal(j, /* including_new= */ true);
+
+        if (ret_job_id)
+                *ret_job_id = j->id;
+
+        return 0;
+}
+
+int varlink_error_no_such_unit(sd_varlink *v, const char *name) {
+        return sd_varlink_errorbo(
+                        ASSERT_PTR(v),
+                        VARLINK_ERROR_UNIT_NO_SUCH_UNIT,
+                        JSON_BUILD_PAIR_STRING_NON_EMPTY("parameter", name));
+}
+
+typedef struct UnitSetPropertiesParameters {
+        const char *unsupported_property; /* For error reporting */
+        const char *name;
+        bool runtime;
+
+        bool markers_found;
+        unsigned markers, markers_mask;
+} UnitSetPropertiesParameters;
+
+static int parse_unit_markers(const char *name, sd_json_variant *variant, sd_json_dispatch_flags_t flags, void *userdata) {
+        UnitSetPropertiesParameters *p = ASSERT_PTR(userdata);
+        bool some_plus_minus = false, some_absolute = false;
+        unsigned settings = 0, mask = 0;
+        sd_json_variant *e;
+        int r;
+
+        assert(variant);
+
+        JSON_VARIANT_ARRAY_FOREACH(e, variant) {
+                if (!sd_json_variant_is_string(e))
+                        return json_log(variant, flags, SYNTHETIC_ERRNO(EINVAL), "Marker is not an array of strings.");
+
+                const char *word = sd_json_variant_string(e);
+
+                r = parse_unit_marker(word, &settings, &mask);
+                if (r < 0)
+                        return json_log(variant, flags, r, "Failed to parse marker '%s'.", word);
+                if (r > 0)
+                        some_plus_minus = true;
+                else
+                        some_absolute = true;
+        }
+
+        if (some_plus_minus && some_absolute)
+                return json_log(variant, flags, SYNTHETIC_ERRNO(EINVAL), "Absolute and non-absolute markers in the same setting.");
+
+        if (some_absolute || sd_json_variant_elements(variant) == 0)
+                mask = UINT_MAX;
+
+        p->markers = settings;
+        p->markers_mask = mask;
+        p->markers_found = true;
+
+        return 0;
+}
+
+static int unit_dispatch_properties(const char *name, sd_json_variant *variant, sd_json_dispatch_flags_t flags, void *userdata) {
+        static const sd_json_dispatch_field dispatch_table[] = {
+                { "Markers", SD_JSON_VARIANT_ARRAY, parse_unit_markers, 0, 0 },
+                {}
+        };
+        UnitSetPropertiesParameters *p = ASSERT_PTR(userdata);
+        const char *bad_field = NULL;
+        int r;
+
+        r = sd_json_dispatch_full(variant, dispatch_table, /* bad= */ NULL, flags, userdata, &bad_field);
+        if (r == -EADDRNOTAVAIL && !isempty(bad_field))
+                /* When properties contains a valid field, but that we don't currently support, make sure to
+                 * return the offending property, rather than generic invalid argument. */
+                p->unsupported_property = bad_field;
+        return r;
+}
+
+int vl_method_set_unit_properties(sd_varlink *link, sd_json_variant *parameters, sd_varlink_method_flags_t flags, void *userdata) {
+        static const sd_json_dispatch_field dispatch_table[] = {
+                { "name",       SD_JSON_VARIANT_STRING,  json_dispatch_const_unit_name, offsetof(UnitSetPropertiesParameters, name),    SD_JSON_MANDATORY },
+                { "runtime",    SD_JSON_VARIANT_BOOLEAN, sd_json_dispatch_stdbool,      offsetof(UnitSetPropertiesParameters, runtime), SD_JSON_MANDATORY },
+                { "properties", SD_JSON_VARIANT_OBJECT,  unit_dispatch_properties,      0,                                              SD_JSON_MANDATORY },
+                {}
+        };
+
+        UnitSetPropertiesParameters p = {};
+        Manager *manager = ASSERT_PTR(userdata);
+        const char *bad_field = NULL;
+        Unit *unit;
+        int r;
+
+        assert(link);
+        assert(parameters);
+
+        r = sd_json_dispatch_full(parameters, dispatch_table, /* bad= */ NULL, /* flags= */ 0, &p, &bad_field);
+        if (r < 0) {
+                /* When properties contains a valid field, but that we don't currently support, make sure to
+                 * return a specific error, rather than generic invalid argument. */
+                if (streq_ptr(bad_field, "properties") && r == -EADDRNOTAVAIL)
+                        return sd_varlink_errorbo(
+                                link,
+                                "io.systemd.Unit.PropertyNotSupported",
+                                SD_JSON_BUILD_PAIR_CONDITION(!!p.unsupported_property, "property", SD_JSON_BUILD_STRING(p.unsupported_property)));
+                if (bad_field)
+                        return sd_varlink_error_invalid_parameter_name(link, bad_field);
+                return r;
+        }
+
+        r = load_unit_and_check(link, manager, p.name, &unit);
+        if (r < 0)
+                return r;
+
+        r = mac_selinux_unit_access_check_varlink(unit, link, "start");
+        if (r < 0)
+                return sd_varlink_error(link, SD_VARLINK_ERROR_PERMISSION_DENIED, NULL);
+
+        r = varlink_verify_polkit_async(
+                        link,
+                        manager->system_bus,
+                        "org.freedesktop.systemd1.manage-units",
+                        /* details= */ NULL,
+                        &manager->polkit_registry);
+        if (r <= 0)
+                return r;
+
+        if (p.markers_found)
+                unit->markers = unit_normalize_markers((unit->markers & ~p.markers_mask), p.markers);
+
+        return sd_varlink_reply(link, NULL);
 }

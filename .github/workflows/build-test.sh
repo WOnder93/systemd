@@ -17,6 +17,7 @@ ARGS=(
     "--optimization=3 -Db_lto=false -Dtpm2=disabled -Dlibfido2=disabled -Dp11kit=disabled -Defi=false -Dbootloader=disabled"
     "--optimization=3 -Dfexecve=true -Dstandalone-binaries=true -Dstatic-libsystemd=true -Dstatic-libudev=true"
     "-Db_ndebug=true"
+    "--auto-features=disabled -Dcompat-mutable-uid-boundaries=true"
 )
 PACKAGES=(
     cryptsetup-bin
@@ -30,7 +31,6 @@ PACKAGES=(
     libarchive-dev
     libblkid-dev
     libbpf-dev
-    libcap-dev
     libcurl4-gnutls-dev
     libfdisk-dev
     libfido2-dev
@@ -47,6 +47,7 @@ PACKAGES=(
     libxkbcommon-dev
     libxtables-dev
     libzstd-dev
+    linux-tools-generic
     mold
     mount
     net-tools
@@ -142,6 +143,12 @@ sudo apt-get -y install "${PACKAGES[@]}"
 # locally and add the local bin directory to the $PATH.
 pip3 install --user -r .github/workflows/requirements.txt --require-hashes --break-system-packages
 export PATH="$HOME/.local/bin:$PATH"
+
+# TODO: drop after we switch to ubuntu 26.04
+bpftool_dir=$(dirname "$(find /usr/lib/linux-tools/ /usr/lib/linux-tools-* -name 'bpftool' -perm /u=x 2>/dev/null | sort -r | head -n1)")
+if [ -n "$bpftool_dir" ]; then
+    export PATH="$bpftool_dir:$PATH"
+fi
 
 if [[ -n "$CUSTOM_PYTHON" ]]; then
     # If CUSTOM_PYTHON is set we need to pull jinja2 from pip, as a local interpreter is used

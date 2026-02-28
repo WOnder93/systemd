@@ -132,18 +132,6 @@ static int exec_cgroup_context_serialize(const CGroupContext *c, FILE *f) {
                         return r;
         }
 
-        if (c->default_memory_min > 0) {
-                r = serialize_item_format(f, "exec-cgroup-context-default-memory-min", "%" PRIu64, c->default_memory_min);
-                if (r < 0)
-                        return r;
-        }
-
-        if (c->default_memory_low > 0) {
-                r = serialize_item_format(f, "exec-cgroup-context-default-memory-low", "%" PRIu64, c->default_memory_low);
-                if (r < 0)
-                        return r;
-        }
-
         if (c->memory_min > 0) {
                 r = serialize_item_format(f, "exec-cgroup-context-memory-min", "%" PRIu64, c->memory_min);
                 if (r < 0)
@@ -225,26 +213,6 @@ static int exec_cgroup_context_serialize(const CGroupContext *c, FILE *f) {
                 if (r < 0)
                         return r;
         }
-
-        r = serialize_bool_elide(f, "exec-cgroup-context-default-memory-min-set", c->default_memory_min_set);
-        if (r < 0)
-                return r;
-
-        r = serialize_bool_elide(f, "exec-cgroup-context-default-memory-low-set", c->default_memory_low_set);
-        if (r < 0)
-                return r;
-
-        r = serialize_bool_elide(f, "exec-cgroup-context-default-startup-memory-low-set", c->default_startup_memory_low_set);
-        if (r < 0)
-                return r;
-
-        r = serialize_bool_elide(f, "exec-cgroup-context-memory-min-set", c->memory_min_set);
-        if (r < 0)
-                return r;
-
-        r = serialize_bool_elide(f, "exec-cgroup-context-memory-low-set", c->memory_low_set);
-        if (r < 0)
-                return r;
 
         r = serialize_bool_elide(f, "exec-cgroup-context-startup-memory-low-set", c->startup_memory_low_set);
         if (r < 0)
@@ -428,6 +396,10 @@ static int exec_cgroup_context_serialize(const CGroupContext *c, FILE *f) {
         if (r < 0)
                 return r;
 
+        r = serialize_item(f, "exec-cgroup-context-bind-iface", c->bind_network_interface);
+        if (r < 0)
+                return r;
+
         fputc('\n', f); /* End marker */
 
         return 0;
@@ -528,14 +500,6 @@ static int exec_cgroup_context_deserialize(CGroupContext *c, FILE *f) {
                         r = safe_atou64(val, &c->startup_io_weight);
                         if (r < 0)
                                 return r;
-                } else if ((val = startswith(l, "exec-cgroup-context-default-memory-min="))) {
-                        r = safe_atou64(val, &c->default_memory_min);
-                        if (r < 0)
-                                return r;
-                } else if ((val = startswith(l, "exec-cgroup-context-default-memory-low="))) {
-                        r = safe_atou64(val, &c->default_memory_low);
-                        if (r < 0)
-                                return r;
                 } else if ((val = startswith(l, "exec-cgroup-context-memory-min="))) {
                         r = safe_atou64(val, &c->memory_min);
                         if (r < 0)
@@ -593,31 +557,6 @@ static int exec_cgroup_context_deserialize(CGroupContext *c, FILE *f) {
                         r = safe_atou64(val, &c->tasks_max.scale);
                         if (r < 0)
                                 return r;
-                } else if ((val = startswith(l, "exec-cgroup-context-default-memory-min-set="))) {
-                        r = parse_boolean(val);
-                        if (r < 0)
-                                return r;
-                        c->default_memory_min_set = r;
-                } else if ((val = startswith(l, "exec-cgroup-context-default-memory-low-set="))) {
-                        r = parse_boolean(val);
-                        if (r < 0)
-                                return r;
-                        c->default_memory_low_set = r;
-                } else if ((val = startswith(l, "exec-cgroup-context-default-startup-memory-low-set="))) {
-                        r = parse_boolean(val);
-                        if (r < 0)
-                                return r;
-                        c->default_startup_memory_low_set = r;
-                } else if ((val = startswith(l, "exec-cgroup-context-memory-min-set="))) {
-                        r = parse_boolean(val);
-                        if (r < 0)
-                                return r;
-                        c->memory_min_set = r;
-                } else if ((val = startswith(l, "exec-cgroup-context-memory-low-set="))) {
-                        r = parse_boolean(val);
-                        if (r < 0)
-                                return r;
-                        c->memory_low_set = r;
                 } else if ((val = startswith(l, "exec-cgroup-context-startup-memory-low-set="))) {
                         r = parse_boolean(val);
                         if (r < 0)
@@ -907,6 +846,10 @@ static int exec_cgroup_context_deserialize(CGroupContext *c, FILE *f) {
                         if (r < 0)
                                 return r;
                         c->restrict_network_interfaces_is_allow_list = r;
+                } else if ((val = startswith(l, "exec-cgroup-context-bind-iface="))) {
+                        r = free_and_strdup(&c->bind_network_interface, val);
+                        if (r < 0)
+                                return r;
                 } else
                         log_warning("Failed to parse serialized line, ignoring: %s", l);
         }
@@ -937,6 +880,12 @@ static int exec_runtime_serialize(const ExecRuntime *rt, FILE *f, FDSet *fds) {
                 r = serialize_item(f, "exec-runtime-var-tmp-dir", rt->shared->var_tmp_dir);
                 if (r < 0)
                         return r;
+
+                if (rt->shared->userns_storage_socket[0] >= 0 && rt->shared->userns_storage_socket[1] >= 0) {
+                        r = serialize_fd_many(f, fds, "exec-runtime-userns-storage-socket", rt->shared->userns_storage_socket, 2);
+                        if (r < 0)
+                                return r;
+                }
 
                 if (rt->shared->netns_storage_socket[0] >= 0 && rt->shared->netns_storage_socket[1] >= 0) {
                         r = serialize_fd_many(f, fds, "exec-runtime-netns-storage-socket", rt->shared->netns_storage_socket, 2);
@@ -1013,6 +962,12 @@ static int exec_runtime_deserialize(ExecRuntime *rt, FILE *f, FDSet *fds) {
                         r = free_and_strdup(&rt->shared->var_tmp_dir, val);
                         if (r < 0)
                                 return r;
+                } else if ((val = startswith(l, "exec-runtime-userns-storage-socket="))) {
+
+                        r = deserialize_fd_many(fds, val, 2, rt->shared->userns_storage_socket);
+                        if (r < 0)
+                                continue;
+
                 } else if ((val = startswith(l, "exec-runtime-netns-storage-socket="))) {
 
                         r = deserialize_fd_many(fds, val, 2, rt->shared->netns_storage_socket);
@@ -1090,26 +1045,20 @@ static int exec_parameters_serialize(const ExecParameters *p, const ExecContext 
                                 return r;
                 }
 
-                if (p->n_storage_fds > 0) {
-                        r = serialize_item_format(f, "exec-parameters-n-storage-fds", "%zu", p->n_storage_fds);
+                if (p->n_stashed_fds > 0) {
+                        r = serialize_item_format(f, "exec-parameters-n-stashed-fds", "%zu", p->n_stashed_fds);
                         if (r < 0)
                                 return r;
                 }
 
-                if (p->n_extra_fds > 0) {
-                        r = serialize_item_format(f, "exec-parameters-n-extra-fds", "%zu", p->n_extra_fds);
-                        if (r < 0)
-                                return r;
-                }
+                r = serialize_fd_many(f, fds, "exec-parameters-fds", p->fds, p->n_socket_fds + p->n_stashed_fds);
+                if (r < 0)
+                        return r;
 
-                r = serialize_fd_many(f, fds, "exec-parameters-fds", p->fds, p->n_socket_fds + p->n_storage_fds + p->n_extra_fds);
+                r = serialize_strv(f, "exec-parameters-fd-names", p->fd_names);
                 if (r < 0)
                         return r;
         }
-
-        r = serialize_strv(f, "exec-parameters-fd-names", p->fd_names);
-        if (r < 0)
-                return r;
 
         if (p->flags != 0) {
                 r = serialize_item_format(f, "exec-parameters-flags", "%u", (unsigned) p->flags);
@@ -1120,12 +1069,6 @@ static int exec_parameters_serialize(const ExecParameters *p, const ExecContext 
         r = serialize_bool_elide(f, "exec-parameters-selinux-context-net", p->selinux_context_net);
         if (r < 0)
                 return r;
-
-        if (p->cgroup_supported != 0) {
-                r = serialize_item_format(f, "exec-parameters-cgroup-supported", "%u", (unsigned) p->cgroup_supported);
-                if (r < 0)
-                        return r;
-        }
 
         r = serialize_item(f, "exec-parameters-cgroup-path", p->cgroup_path);
         if (r < 0)
@@ -1186,6 +1129,10 @@ static int exec_parameters_serialize(const ExecParameters *p, const ExecContext 
                 return r;
 
         r = serialize_fd(f, fds, "exec-parameters-stderr-fd", p->stderr_fd);
+        if (r < 0)
+                return r;
+
+        r = serialize_fd(f, fds, "exec-parameters-root-directory-fd", p->root_directory_fd);
         if (r < 0)
                 return r;
 
@@ -1289,47 +1236,37 @@ static int exec_parameters_deserialize(ExecParameters *p, FILE *f, FDSet *fds) {
 
                         if (p->n_socket_fds > nr_open)
                                 return -EINVAL; /* too many, someone is playing games with us */
-                } else if ((val = startswith(l, "exec-parameters-n-storage-fds="))) {
+                } else if ((val = startswith(l, "exec-parameters-n-stashed-fds="))) {
                         if (p->fds)
                                 return -EINVAL; /* Already received */
 
-                        r = safe_atozu(val, &p->n_storage_fds);
+                        r = safe_atozu(val, &p->n_stashed_fds);
                         if (r < 0)
                                 return r;
 
-                        if (p->n_storage_fds > nr_open)
-                                return -EINVAL; /* too many, someone is playing games with us */
-                } else if ((val = startswith(l, "exec-parameters-n-extra-fds="))) {
-                        if (p->fds)
-                                return -EINVAL; /* Already received */
-
-                        r = safe_atozu(val, &p->n_extra_fds);
-                        if (r < 0)
-                                return r;
-
-                        if (p->n_extra_fds > nr_open)
+                        if (p->n_stashed_fds > nr_open)
                                 return -EINVAL; /* too many, someone is playing games with us */
                 } else if ((val = startswith(l, "exec-parameters-fds="))) {
-                        if (p->n_socket_fds + p->n_storage_fds + p->n_extra_fds == 0)
+                        if (p->n_socket_fds + p->n_stashed_fds == 0)
                                 return log_warning_errno(
                                                 SYNTHETIC_ERRNO(EINVAL),
                                                 "Got exec-parameters-fds= without "
-                                                "prior exec-parameters-n-socket-fds= or exec-parameters-n-storage-fds= or exec-parameters-n-extra-fds=");
-                        if (p->n_socket_fds + p->n_storage_fds + p->n_extra_fds > nr_open)
+                                                "prior exec-parameters-n-socket-fds= or exec-parameters-n-stashed-fds=");
+                        if (p->n_socket_fds + p->n_stashed_fds > nr_open)
                                 return -EINVAL; /* too many, someone is playing games with us */
 
                         if (p->fds)
                                 return -EINVAL; /* duplicated */
 
-                        p->fds = new(int, p->n_socket_fds + p->n_storage_fds + p->n_extra_fds);
+                        p->fds = new(int, p->n_socket_fds + p->n_stashed_fds);
                         if (!p->fds)
                                 return log_oom_debug();
 
                         /* Ensure we don't leave any FD uninitialized on error, it makes the fuzzer sad */
-                        FOREACH_ARRAY(i, p->fds, p->n_socket_fds + p->n_storage_fds + p->n_extra_fds)
+                        FOREACH_ARRAY(i, p->fds, p->n_socket_fds + p->n_stashed_fds)
                                 *i = -EBADF;
 
-                        r = deserialize_fd_many(fds, val, p->n_socket_fds + p->n_storage_fds + p->n_extra_fds, p->fds);
+                        r = deserialize_fd_many(fds, val, p->n_socket_fds + p->n_stashed_fds, p->fds);
                         if (r < 0)
                                 continue;
 
@@ -1350,13 +1287,6 @@ static int exec_parameters_deserialize(ExecParameters *p, FILE *f, FDSet *fds) {
                                 return r;
 
                         p->selinux_context_net = r;
-                } else if ((val = startswith(l, "exec-parameters-cgroup-supported="))) {
-                        unsigned cgroup_supported;
-
-                        r = safe_atou(val, &cgroup_supported);
-                        if (r < 0)
-                                return r;
-                        p->cgroup_supported = cgroup_supported;
                 } else if ((val = startswith(l, "exec-parameters-cgroup-path="))) {
                         r = free_and_strdup(&p->cgroup_path, val);
                         if (r < 0)
@@ -1451,6 +1381,16 @@ static int exec_parameters_deserialize(ExecParameters *p, FILE *f, FDSet *fds) {
                                 continue;
 
                         close_and_replace(p->stderr_fd, fd);
+
+                } else if ((val = startswith(l, "exec-parameters-root-directory-fd="))) {
+                        int fd;
+
+                        fd = deserialize_fd(fds, val);
+                        if (fd < 0)
+                                continue;
+
+                        close_and_replace(p->root_directory_fd, fd);
+
                 } else if ((val = startswith(l, "exec-parameters-exec-fd="))) {
                         int fd;
 
@@ -1534,54 +1474,83 @@ static int exec_parameters_deserialize(ExecParameters *p, FILE *f, FDSet *fds) {
                         log_warning("Failed to parse serialized line, ignoring: %s", l);
         }
 
-        /* Bail out if we got exec-parameters-n-{socket/storage}-fds= but no corresponding
+        /* Bail out if we got exec-parameters-n-{socket/stashed}-fds= but no corresponding
          * exec-parameters-fds= */
-        if (p->n_socket_fds + p->n_storage_fds > 0 && !p->fds)
+        if (p->n_socket_fds + p->n_stashed_fds > 0 && !p->fds)
                 return -EINVAL;
 
         return 0;
 }
 
-static int serialize_std_out_err(const ExecContext *c, FILE *f, int fileno) {
-        char *key, *value;
-        const char *type;
+static int serialize_mount_options(const MountOptions *mount_options, char **s) {
+        assert(s);
 
-        assert(c);
-        assert(f);
-        assert(IN_SET(fileno, STDOUT_FILENO, STDERR_FILENO));
-
-        type = fileno == STDOUT_FILENO ? "output" : "error";
-
-        switch (fileno == STDOUT_FILENO ? c->std_output : c->std_error) {
-        case EXEC_OUTPUT_NAMED_FD:
-                key = strjoina("exec-context-std-", type, "-fd-name");
-                value = c->stdio_fdname[fileno];
-
-                break;
-
-        case EXEC_OUTPUT_FILE:
-                key = strjoina("exec-context-std-", type, "-file");
-                value = c->stdio_file[fileno];
-
-                break;
-
-        case EXEC_OUTPUT_FILE_APPEND:
-                key = strjoina("exec-context-std-", type, "-file-append");
-                value = c->stdio_file[fileno];
-
-                break;
-
-        case EXEC_OUTPUT_FILE_TRUNCATE:
-                key = strjoina("exec-context-std-", type, "-file-truncate");
-                value = c->stdio_file[fileno];
-
-                break;
-
-        default:
+        if (!mount_options)
                 return 0;
+
+        for (PartitionDesignator i = 0; i < _PARTITION_DESIGNATOR_MAX; i++) {
+                _cleanup_free_ char *escaped = NULL;
+
+                if (isempty(mount_options->options[i]))
+                        continue;
+
+                escaped = shell_escape(mount_options->options[i], ":");
+                if (!escaped)
+                        return log_oom_debug();
+
+                if (!strextend(s,
+                               " ",
+                               partition_designator_to_string(i),
+                               ":",
+                               escaped))
+                        return log_oom_debug();
         }
 
-        return serialize_item(f, key, value);
+        return 0;
+}
+
+static int deserialize_mount_options(const char *s, MountOptions **ret_mount_options) {
+        _cleanup_(mount_options_free_allp) MountOptions *options = NULL;
+        int r;
+
+        assert(ret_mount_options);
+
+        for (;;) {
+                _cleanup_free_ char *word = NULL, *mount_options = NULL, *partition = NULL;
+                PartitionDesignator partition_designator;
+                const char *p;
+
+                r = extract_first_word(&s, &word, NULL, 0);
+                if (r < 0)
+                        return r;
+                if (r == 0)
+                        break;
+
+                p = word;
+                r = extract_many_words(&p, ":", EXTRACT_CUNESCAPE|EXTRACT_UNESCAPE_SEPARATORS, &partition, &mount_options);
+                if (r < 0)
+                        return r;
+                if (r == 0)
+                        continue;
+                if (r != 2) {
+                        log_warning("Failed to parse mount options entry '%s', ignoring.", word);
+                        continue;
+                }
+
+                partition_designator = partition_designator_from_string(partition);
+                if (partition_designator < 0) {
+                        log_warning_errno(partition_designator, "Unknown partition designator '%s' in exec-context-root-image-options= entry, ignoring.", partition);
+                        continue;
+                }
+
+                r = mount_options_set_and_consume(&options, partition_designator, TAKE_PTR(mount_options));
+                if (r < 0)
+                        return r;
+        }
+
+        *ret_mount_options = TAKE_PTR(options);
+
+        return 0;
 }
 
 static int exec_context_serialize(const ExecContext *c, FILE *f) {
@@ -1631,22 +1600,9 @@ static int exec_context_serialize(const ExecContext *c, FILE *f) {
         if (c->root_image_options) {
                 _cleanup_free_ char *options = NULL;
 
-                LIST_FOREACH(mount_options, o, c->root_image_options) {
-                        if (isempty(o->options))
-                                continue;
-
-                        _cleanup_free_ char *escaped = NULL;
-                        escaped = shell_escape(o->options, ":");
-                        if (!escaped)
-                                return log_oom_debug();
-
-                        if (!strextend(&options,
-                                        " ",
-                                        partition_designator_to_string(o->partition_designator),
-                                               ":",
-                                               escaped))
-                                        return log_oom_debug();
-                }
+                r = serialize_mount_options(c->root_image_options, &options);
+                if (r < 0)
+                        return r;
 
                 r = serialize_item(f, "exec-context-root-image-options", options);
                 if (r < 0)
@@ -1665,15 +1621,19 @@ static int exec_context_serialize(const ExecContext *c, FILE *f) {
         if (r < 0)
                 return r;
 
-        r = serialize_item_hexmem(f, "exec-context-root-hash", c->root_hash, c->root_hash_size);
+        r = serialize_item_hexmem(f, "exec-context-root-hash", c->root_hash.iov_base, c->root_hash.iov_len);
         if (r < 0)
                 return r;
 
-        r = serialize_item_base64mem(f, "exec-context-root-hash-sig", c->root_hash_sig, c->root_hash_sig_size);
+        r = serialize_item_base64mem(f, "exec-context-root-hash-sig", c->root_hash_sig.iov_base, c->root_hash_sig.iov_len);
         if (r < 0)
                 return r;
 
         r = serialize_bool_elide(f, "exec-context-root-ephemeral", c->root_ephemeral);
+        if (r < 0)
+                return r;
+
+        r = serialize_item_escaped(f, "exec-context-root-mstack", c->root_mstack);
         if (r < 0)
                 return r;
 
@@ -1698,6 +1658,10 @@ static int exec_context_serialize(const ExecContext *c, FILE *f) {
                 return r;
 
         r = serialize_item_tristate(f, "exec-context-memory-ksm", c->memory_ksm);
+        if (r < 0)
+                return r;
+
+        r = serialize_item(f, "exec-context-memory-thp", memory_thp_to_string(c->memory_thp));
         if (r < 0)
                 return r;
 
@@ -2007,6 +1971,10 @@ static int exec_context_serialize(const ExecContext *c, FILE *f) {
                         return r;
         }
 
+        r = serialize_bool_elide(f, "exec-context-root-directory-as-fd", c->root_directory_as_fd);
+        if (r < 0)
+                return r;
+
         r = serialize_item(f, "exec-context-std-input", exec_input_to_string(c->std_input));
         if (r < 0)
                 return r;
@@ -2024,31 +1992,59 @@ static int exec_context_serialize(const ExecContext *c, FILE *f) {
                 return r;
 
         switch (c->std_input) {
+
         case EXEC_INPUT_NAMED_FD:
                 r = serialize_item(f, "exec-context-std-input-fd-name", c->stdio_fdname[STDIN_FILENO]);
-                if (r < 0)
-                        return r;
                 break;
 
         case EXEC_INPUT_FILE:
-                r = serialize_item(f, "exec-context-std-input-file", c->stdio_file[STDIN_FILENO]);
-                if (r < 0)
-                        return r;
+                r = serialize_item_escaped(f, "exec-context-std-input-file", c->stdio_file[STDIN_FILENO]);
+                break;
+
+        case EXEC_INPUT_DATA:
+                r = serialize_item_base64mem(f, "exec-context-std-input-data", c->stdin_data, c->stdin_data_size);
                 break;
 
         default:
-                ;
+                r = 0;
         }
-
-        r = serialize_std_out_err(c, f, STDOUT_FILENO);
         if (r < 0)
                 return r;
 
-        r = serialize_std_out_err(c, f, STDERR_FILENO);
+        switch (c->std_output) {
+
+        case EXEC_OUTPUT_NAMED_FD:
+                r = serialize_item(f, "exec-context-std-output-fd-name", c->stdio_fdname[STDOUT_FILENO]);
+                break;
+
+        case EXEC_OUTPUT_FILE:
+        case EXEC_OUTPUT_FILE_APPEND:
+        case EXEC_OUTPUT_FILE_TRUNCATE:
+                r = serialize_item_escaped(f, "exec-context-std-output-file", c->stdio_file[STDOUT_FILENO]);
+                break;
+
+        default:
+                r = 0;
+        }
         if (r < 0)
                 return r;
 
-        r = serialize_item_base64mem(f, "exec-context-stdin-data", c->stdin_data, c->stdin_data_size);
+
+        switch (c->std_error) {
+
+        case EXEC_OUTPUT_NAMED_FD:
+                r = serialize_item(f, "exec-context-std-error-fd-name", c->stdio_fdname[STDERR_FILENO]);
+                break;
+
+        case EXEC_OUTPUT_FILE:
+        case EXEC_OUTPUT_FILE_APPEND:
+        case EXEC_OUTPUT_FILE_TRUNCATE:
+                r = serialize_item_escaped(f, "exec-context-std-error-file", c->stdio_file[STDERR_FILENO]);
+                break;
+
+        default:
+                r = 0;
+        }
         if (r < 0)
                 return r;
 
@@ -2373,6 +2369,10 @@ static int exec_context_serialize(const ExecContext *c, FILE *f) {
         if (r < 0)
                 return r;
 
+        r = serialize_item(f, "exec-context-user-namespace-path", c->user_namespace_path);
+        if (r < 0)
+                return r;
+
         r = serialize_item(f, "exec-context-network-namespace-path", c->network_namespace_path);
         if (r < 0)
                 return r;
@@ -2399,23 +2399,9 @@ static int exec_context_serialize(const ExecContext *c, FILE *f) {
                 if (!s)
                         return log_oom_debug();
 
-                LIST_FOREACH(mount_options, o, mount->mount_options) {
-                        _cleanup_free_ char *escaped = NULL;
-
-                        if (isempty(o->options))
-                                continue;
-
-                        escaped = shell_escape(o->options, ":");
-                        if (!escaped)
-                                return log_oom_debug();
-
-                        if (!strextend(&s,
-                                       " ",
-                                       partition_designator_to_string(o->partition_designator),
-                                       ":",
-                                       escaped))
-                                return log_oom_debug();
-                }
+                r = serialize_mount_options(mount->mount_options, &s);
+                if (r < 0)
+                        return r;
 
                 r = serialize_item(f, "exec-context-mount-image", s);
                 if (r < 0)
@@ -2434,23 +2420,9 @@ static int exec_context_serialize(const ExecContext *c, FILE *f) {
                 if (!s)
                         return log_oom_debug();
 
-                LIST_FOREACH(mount_options, o, mount->mount_options) {
-                        _cleanup_free_ char *escaped = NULL;
-
-                        if (isempty(o->options))
-                                continue;
-
-                        escaped = shell_escape(o->options, ":");
-                        if (!escaped)
-                                return log_oom_debug();
-
-                        if (!strextend(&s,
-                                       " ",
-                                       partition_designator_to_string(o->partition_designator),
-                                       ":",
-                                       escaped))
-                                return log_oom_debug();
-                }
+                r = serialize_mount_options(mount->mount_options, &s);
+                if (r < 0)
+                        return r;
 
                 r = serialize_item(f, "exec-context-extension-image", s);
                 if (r < 0)
@@ -2566,38 +2538,13 @@ static int exec_context_deserialize(ExecContext *c, FILE *f) {
                                 return k;
                         free_and_replace(c->root_image, p);
                 } else if ((val = startswith(l, "exec-context-root-image-options="))) {
-                        for (;;) {
-                                _cleanup_free_ char *word = NULL, *mount_options = NULL, *partition = NULL;
-                                PartitionDesignator partition_designator;
-                                MountOptions *o = NULL;
-                                const char *p;
+                        _cleanup_(mount_options_free_allp) MountOptions *options = NULL;
 
-                                r = extract_first_word(&val, &word, NULL, 0);
-                                if (r < 0)
-                                        return r;
-                                if (r == 0)
-                                        break;
+                        r = deserialize_mount_options(val, &options);
+                        if (r < 0)
+                                return r;
 
-                                p = word;
-                                r = extract_many_words(&p, ":", EXTRACT_CUNESCAPE|EXTRACT_UNESCAPE_SEPARATORS, &partition, &mount_options);
-                                if (r < 0)
-                                        return r;
-                                if (r == 0)
-                                        continue;
-
-                                partition_designator = partition_designator_from_string(partition);
-                                if (partition_designator < 0)
-                                        return -EINVAL;
-
-                                o = new(MountOptions, 1);
-                                if (!o)
-                                        return log_oom_debug();
-                                *o = (MountOptions) {
-                                        .partition_designator = partition_designator,
-                                        .options = TAKE_PTR(mount_options),
-                                };
-                                LIST_APPEND(mount_options, c->root_image_options, o);
-                        }
+                        free_and_replace_full(c->root_image_options, options, mount_options_free_all);
                 } else if ((val = startswith(l, "exec-context-root-verity="))) {
                         r = free_and_strdup(&c->root_verity, val);
                         if (r < 0)
@@ -2611,13 +2558,13 @@ static int exec_context_deserialize(ExecContext *c, FILE *f) {
                         if (r < 0)
                                 return r;
                 } else if ((val = startswith(l, "exec-context-root-hash="))) {
-                        c->root_hash = mfree(c->root_hash);
-                        r = unhexmem(val, &c->root_hash, &c->root_hash_size);
+                        iovec_done(&c->root_hash);
+                        r = unhexmem(val, &c->root_hash.iov_base, &c->root_hash.iov_len);
                         if (r < 0)
                                 return r;
                 } else if ((val = startswith(l, "exec-context-root-hash-sig="))) {
-                        c->root_hash_sig = mfree(c->root_hash_sig);
-                        r= unbase64mem(val, &c->root_hash_sig, &c->root_hash_sig_size);
+                        iovec_done(&c->root_hash_sig);
+                        r = unbase64mem(val, &c->root_hash_sig.iov_base, &c->root_hash_sig.iov_len);
                         if (r < 0)
                                 return r;
                 } else if ((val = startswith(l, "exec-context-root-ephemeral="))) {
@@ -2625,6 +2572,14 @@ static int exec_context_deserialize(ExecContext *c, FILE *f) {
                         if (r < 0)
                                 return r;
                         c->root_ephemeral = r;
+                } else if ((val = startswith(l, "exec-context-root-mstack="))) {
+                        ssize_t k;
+                        char *p;
+
+                        k = cunescape(val, 0, &p);
+                        if (k < 0)
+                                return k;
+                        free_and_replace(c->root_mstack, p);
                 } else if ((val = startswith(l, "exec-context-umask="))) {
                         r = parse_mode(val, &c->umask);
                         if (r < 0)
@@ -2650,6 +2605,10 @@ static int exec_context_deserialize(ExecContext *c, FILE *f) {
                         r = safe_atoi(val, &c->memory_ksm);
                         if (r < 0)
                                 return r;
+                } else if ((val = startswith(l, "exec-context-memory-thp="))) {
+                        c->memory_thp = memory_thp_from_string(val);
+                        if (c->memory_thp < 0)
+                                return c->memory_thp;
                 } else if ((val = startswith(l, "exec-context-private-tmp="))) {
                         c->private_tmp = private_tmp_from_string(val);
                         if (c->private_tmp < 0)
@@ -3012,6 +2971,11 @@ static int exec_context_deserialize(ExecContext *c, FILE *f) {
                         r = deserialize_usec(val, (usec_t *)&c->timer_slack_nsec);
                         if (r < 0)
                                 return r;
+                } else if ((val = startswith(l, "exec-context-root-directory-as-fd="))) {
+                        r = parse_boolean(val);
+                        if (r < 0)
+                                return r;
+                        c->root_directory_as_fd = r;
                 } else if ((val = startswith(l, "exec-context-std-input="))) {
                         c->std_input = exec_input_from_string(val);
                         if (c->std_input < 0)
@@ -3029,6 +2993,13 @@ static int exec_context_deserialize(ExecContext *c, FILE *f) {
                         if (r < 0)
                                 return r;
                         c->stdio_as_fds = r;
+                } else if ((val = startswith(l, "exec-context-std-input-data="))) {
+                        if (c->stdin_data)
+                                return -EINVAL; /* duplicated */
+
+                        r = unbase64mem(val, &c->stdin_data, &c->stdin_data_size);
+                        if (r < 0)
+                                return r;
                 } else if ((val = startswith(l, "exec-context-std-input-fd-name="))) {
                         r = free_and_strdup(&c->stdio_fdname[STDIN_FILENO], val);
                         if (r < 0)
@@ -3042,40 +3013,35 @@ static int exec_context_deserialize(ExecContext *c, FILE *f) {
                         if (r < 0)
                                 return r;
                 } else if ((val = startswith(l, "exec-context-std-input-file="))) {
-                        r = free_and_strdup(&c->stdio_file[STDIN_FILENO], val);
-                        if (r < 0)
-                                return r;
-                } else if ((val = startswith(l, "exec-context-std-output-file="))) {
-                        r = free_and_strdup(&c->stdio_file[STDOUT_FILENO], val);
-                        if (r < 0)
-                                return r;
-                } else if ((val = startswith(l, "exec-context-std-output-file-append="))) {
-                        r = free_and_strdup(&c->stdio_file[STDOUT_FILENO], val);
-                        if (r < 0)
-                                return r;
-                } else if ((val = startswith(l, "exec-context-std-output-file-truncate="))) {
-                        r = free_and_strdup(&c->stdio_file[STDOUT_FILENO], val);
-                        if (r < 0)
-                                return r;
-                } else if ((val = startswith(l, "exec-context-std-error-file="))) {
-                        r = free_and_strdup(&c->stdio_file[STDERR_FILENO], val);
-                        if (r < 0)
-                                return r;
-                } else if ((val = startswith(l, "exec-context-std-error-file-append="))) {
-                        r = free_and_strdup(&c->stdio_file[STDERR_FILENO], val);
-                        if (r < 0)
-                                return r;
-                } else if ((val = startswith(l, "exec-context-std-error-file-truncate="))) {
-                        r = free_and_strdup(&c->stdio_file[STDERR_FILENO], val);
-                        if (r < 0)
-                                return r;
-                } else if ((val = startswith(l, "exec-context-stdin-data="))) {
-                        if (c->stdin_data)
-                                return -EINVAL; /* duplicated */
+                        ssize_t k;
+                        char *p;
 
-                        r = unbase64mem(val, &c->stdin_data, &c->stdin_data_size);
-                        if (r < 0)
-                                return r;
+                        k = cunescape(val, 0, &p);
+                        if (k < 0)
+                                return k;
+
+                        free_and_replace(c->stdio_file[STDIN_FILENO], p);
+
+                } else if ((val = startswith(l, "exec-context-std-output-file="))) {
+                        ssize_t k;
+                        char *p;
+
+                        k = cunescape(val, 0, &p);
+                        if (k < 0)
+                                return k;
+
+                        free_and_replace(c->stdio_file[STDOUT_FILENO], p);
+
+                } else if ((val = startswith(l, "exec-context-std-error-file="))) {
+                        ssize_t k;
+                        char *p;
+
+                        k = cunescape(val, 0, &p);
+                        if (k < 0)
+                                return k;
+
+                        free_and_replace(c->stdio_file[STDERR_FILENO], p);
+
                 } else if ((val = startswith(l, "exec-context-tty-path="))) {
                         r = free_and_strdup(&c->tty_path, val);
                         if (r < 0)
@@ -3499,6 +3465,10 @@ static int exec_context_deserialize(ExecContext *c, FILE *f) {
                         r = free_and_strdup(&c->network_namespace_path, val);
                         if (r < 0)
                                 return r;
+                } else if ((val = startswith(l, "exec-context-user-namespace-path="))) {
+                        r = free_and_strdup(&c->user_namespace_path, val);
+                        if (r < 0)
+                                return r;
                 } else if ((val = startswith(l, "exec-context-ipc-namespace-path="))) {
                         r = free_and_strdup(&c->ipc_namespace_path, val);
                         if (r < 0)
@@ -3528,54 +3498,9 @@ static int exec_context_deserialize(ExecContext *c, FILE *f) {
                         if (isempty(destination))
                                 continue;
 
-                        for (;;) {
-                                _cleanup_free_ char *tuple = NULL, *partition = NULL, *opts = NULL;
-                                PartitionDesignator partition_designator;
-                                MountOptions *o = NULL;
-                                const char *p;
-
-                                r = extract_first_word(&val, &tuple, NULL, EXTRACT_UNQUOTE|EXTRACT_RETAIN_ESCAPE);
-                                if (r < 0)
-                                        return r;
-                                if (r == 0)
-                                        break;
-
-                                p = tuple;
-                                r = extract_many_words(&p,
-                                                       ":",
-                                                       EXTRACT_CUNESCAPE|EXTRACT_UNESCAPE_SEPARATORS,
-                                                       &partition,
-                                                       &opts);
-                                if (r < 0)
-                                        return r;
-                                if (r == 0)
-                                        continue;
-                                if (r == 1) {
-                                        o = new(MountOptions, 1);
-                                        if (!o)
-                                                return log_oom_debug();
-                                        *o = (MountOptions) {
-                                                .partition_designator = PARTITION_ROOT,
-                                                .options = TAKE_PTR(partition),
-                                        };
-                                        LIST_APPEND(mount_options, options, o);
-
-                                        continue;
-                                }
-
-                                partition_designator = partition_designator_from_string(partition);
-                                if (partition_designator < 0)
-                                        continue;
-
-                                o = new(MountOptions, 1);
-                                if (!o)
-                                        return log_oom_debug();
-                                *o = (MountOptions) {
-                                        .partition_designator = partition_designator,
-                                        .options = TAKE_PTR(opts),
-                                };
-                                LIST_APPEND(mount_options, options, o);
-                        }
+                        r = deserialize_mount_options(val, &options);
+                        if (r < 0)
+                                return r;
 
                         r = mount_image_add(&c->mount_images, &c->n_mount_images,
                                         &(MountImage) {
@@ -3608,54 +3533,9 @@ static int exec_context_deserialize(ExecContext *c, FILE *f) {
                                 s++;
                         }
 
-                        for (;;) {
-                                _cleanup_free_ char *tuple = NULL, *partition = NULL, *opts = NULL;
-                                PartitionDesignator partition_designator;
-                                MountOptions *o = NULL;
-                                const char *p;
-
-                                r = extract_first_word(&val, &tuple, NULL, EXTRACT_UNQUOTE|EXTRACT_RETAIN_ESCAPE);
-                                if (r < 0)
-                                        return r;
-                                if (r == 0)
-                                        break;
-
-                                p = tuple;
-                                r = extract_many_words(&p,
-                                                       ":",
-                                                       EXTRACT_CUNESCAPE|EXTRACT_UNESCAPE_SEPARATORS,
-                                                       &partition,
-                                                       &opts);
-                                if (r < 0)
-                                        return r;
-                                if (r == 0)
-                                        continue;
-                                if (r == 1) {
-                                        o = new(MountOptions, 1);
-                                        if (!o)
-                                                return log_oom_debug();
-                                        *o = (MountOptions) {
-                                                .partition_designator = PARTITION_ROOT,
-                                                .options = TAKE_PTR(partition),
-                                        };
-                                        LIST_APPEND(mount_options, options, o);
-
-                                        continue;
-                                }
-
-                                partition_designator = partition_designator_from_string(partition);
-                                if (partition_designator < 0)
-                                        continue;
-
-                                o = new(MountOptions, 1);
-                                if (!o)
-                                        return log_oom_debug();
-                                *o = (MountOptions) {
-                                        .partition_designator = partition_designator,
-                                        .options = TAKE_PTR(opts),
-                                };
-                                LIST_APPEND(mount_options, options, o);
-                        }
+                        r = deserialize_mount_options(val, &options);
+                        if (r < 0)
+                                return r;
 
                         r = mount_image_add(&c->extension_images, &c->n_extension_images,
                                         &(MountImage) {
@@ -3687,7 +3567,7 @@ static int exec_context_deserialize(ExecContext *c, FILE *f) {
                         _cleanup_free_ void *d = NULL;
                         size_t size;
 
-                        r = unbase64mem_full(data, SIZE_MAX, /* secure = */ true, &d, &size);
+                        r = unbase64mem_full(data, SIZE_MAX, /* secure= */ true, &d, &size);
                         if (r < 0)
                                 return r;
 
@@ -3726,21 +3606,21 @@ static int exec_context_deserialize(ExecContext *c, FILE *f) {
                         if (c->root_image_policy)
                                 return -EINVAL; /* duplicated */
 
-                        r = image_policy_from_string(val, &c->root_image_policy);
+                        r = image_policy_from_string(val, /* graceful= */ false, &c->root_image_policy);
                         if (r < 0)
                                 return r;
                 } else if ((val = startswith(l, "exec-context-mount-image-policy="))) {
                         if (c->mount_image_policy)
                                 return -EINVAL; /* duplicated */
 
-                        r = image_policy_from_string(val, &c->mount_image_policy);
+                        r = image_policy_from_string(val, /* graceful= */ false, &c->mount_image_policy);
                         if (r < 0)
                                 return r;
                 } else if ((val = startswith(l, "exec-context-extension-image-policy="))) {
                         if (c->extension_image_policy)
                                 return -EINVAL; /* duplicated */
 
-                        r = image_policy_from_string(val, &c->extension_image_policy);
+                        r = image_policy_from_string(val, /* graceful= */ false, &c->extension_image_policy);
                         if (r < 0)
                                 return r;
                 } else

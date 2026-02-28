@@ -155,6 +155,8 @@ static SD_VARLINK_DEFINE_STRUCT_TYPE(
                 SD_VARLINK_DEFINE_FIELD(NInstalledJobs, SD_VARLINK_INT, 0),
                 SD_VARLINK_FIELD_COMMENT("The total amount of failed jobs"),
                 SD_VARLINK_DEFINE_FIELD(NFailedJobs, SD_VARLINK_INT, 0),
+                SD_VARLINK_FIELD_COMMENT("IDs of transactions that encountered ordering cycle"),
+                SD_VARLINK_DEFINE_FIELD(TransactionsWithOrderingCycle, SD_VARLINK_INT, SD_VARLINK_ARRAY|SD_VARLINK_NULLABLE),
                 SD_VARLINK_FIELD_COMMENT("Boot progress as a floating point value between 0.0 and 1.0"),
                 SD_VARLINK_DEFINE_FIELD(Progress, SD_VARLINK_FLOAT, 0),
                 SD_VARLINK_FIELD_COMMENT("Timestamp when the hardware watchdog was last pinged"),
@@ -173,10 +175,37 @@ static SD_VARLINK_DEFINE_METHOD(
                 SD_VARLINK_FIELD_COMMENT("Runtime information of the manager"),
                 SD_VARLINK_DEFINE_OUTPUT_BY_TYPE(runtime, ManagerRuntime, 0));
 
+static SD_VARLINK_DEFINE_METHOD(
+                Reexecute);
+
+static SD_VARLINK_DEFINE_METHOD(
+                Reload);
+
+static SD_VARLINK_DEFINE_METHOD_FULL(
+                EnqueueMarkedJobs,
+                SD_VARLINK_SUPPORTS_MORE,
+                SD_VARLINK_FIELD_COMMENT("Enqueued unit ID"),
+                SD_VARLINK_DEFINE_OUTPUT(unitID, SD_VARLINK_STRING, SD_VARLINK_NULLABLE),
+                SD_VARLINK_FIELD_COMMENT("ID of enqueued job (if successful)"),
+                SD_VARLINK_DEFINE_OUTPUT(jobID, SD_VARLINK_INT, SD_VARLINK_NULLABLE),
+                SD_VARLINK_FIELD_COMMENT("Varlink error ID (on failure)"),
+                SD_VARLINK_DEFINE_OUTPUT(error, SD_VARLINK_STRING, SD_VARLINK_NULLABLE),
+                SD_VARLINK_FIELD_COMMENT("Job enqueue error message (on failure)"),
+                SD_VARLINK_DEFINE_OUTPUT(errorMessage, SD_VARLINK_STRING, SD_VARLINK_NULLABLE));
+
+static SD_VARLINK_DEFINE_ERROR(RateLimitReached);
+
 SD_VARLINK_DEFINE_INTERFACE(
                 io_systemd_Manager,
                 "io.systemd.Manager",
                 &vl_method_Describe,
+                SD_VARLINK_SYMBOL_COMMENT("Reexecute the main manager process"),
+                &vl_method_Reexecute,
+                SD_VARLINK_SYMBOL_COMMENT("Reload the manager configuration"),
+                &vl_method_Reload,
+                SD_VARLINK_SYMBOL_COMMENT("Enqueue all marked jobs"),
+                &vl_method_EnqueueMarkedJobs,
+                &vl_error_RateLimitReached,
                 &vl_type_ManagerContext,
                 &vl_type_ManagerRuntime,
                 &vl_type_Timestamp,

@@ -1,20 +1,30 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #pragma once
 
-#include "forward.h"
+#include "basic-forward.h"
 
 /* Limits the use of ANSI colors to a subset. */
 typedef enum ColorMode {
-        COLOR_OFF,   /* No colors, monochrome output. */
-        COLOR_16,    /* Only the base 16 colors. */
-        COLOR_256,   /* Only 256 colors. */
-        COLOR_24BIT, /* For truecolor or 24bit color support, no restriction. */
+        COLOR_OFF,        /* No colors, monochrome output. */
+        COLOR_16,         /* Only the base 16 colors. */
+        COLOR_256,        /* Only 256 colors. */
+        COLOR_24BIT,      /* For truecolor or 24bit color support, no restriction. */
+        _COLOR_MODE_FIXED_MAX,
+
+        /* The "AUTO" modes are as the above, but subject to suitable settings for the environment variables
+         * TERM and NO_COLOR. */
+        COLOR_AUTO_16 = _COLOR_MODE_FIXED_MAX,
+        COLOR_AUTO_256,
+        COLOR_AUTO_24BIT,
+
+        /* Same as default (unset), except that $NO_COLOR is ignored/overridden */
+        COLOR_TRUE,
+
         _COLOR_MODE_MAX,
         _COLOR_MODE_INVALID = -EINVAL,
 } ColorMode;
 
-const char* color_mode_to_string(ColorMode m) _const_;
-ColorMode color_mode_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(color_mode, ColorMode);
 
 ColorMode get_color_mode(void);
 static inline bool colors_enabled(void) {
@@ -27,6 +37,8 @@ ColorMode parse_systemd_colors(void);
 bool underline_enabled(void);
 
 void reset_ansi_feature_caches(void);
+
+bool looks_like_ansi_color_code(const char *str);
 
 /* Regular colors */
 #define ANSI_BLACK   "\x1B[0;30m" /* Some type of grey usually. */
@@ -48,7 +60,7 @@ void reset_ansi_feature_caches(void);
 #define ANSI_BRIGHT_CYAN    "\x1B[0;96m"
 #define ANSI_BRIGHT_WHITE   "\x1B[0;97m"
 
-#define ANSI_GREY    "\x1B[0;38;5;245m"
+#define ANSI_GREY    "\x1B[0;38:5:245m"
 
 /* Bold/highlighted */
 #define ANSI_HIGHLIGHT_BLACK    "\x1B[0;1;30m"

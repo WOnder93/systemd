@@ -17,6 +17,8 @@
 #include "format-util.h"
 #include "log.h"
 #include "main-func.h"
+#include "pidfd-util.h"
+#include "pidref.h"
 #include "pretty-print.h"
 #include "process-util.h"
 #include "socket-netlink.h"
@@ -186,6 +188,13 @@ static int exec_process(char * const *argv, int start_fd, size_t n_fds) {
                 if (r < 0)
                         return r;
 
+                uint64_t pidfdid;
+                if (pidfd_get_inode_id_self_cached(&pidfdid) >= 0) {
+                        r = strv_extendf(&envp, "LISTEN_PIDFDID=%" PRIu64, pidfdid);
+                        if (r < 0)
+                                return r;
+                }
+
                 if (arg_fdnames) {
                         _cleanup_free_ char *names = NULL;
                         size_t len;
@@ -230,7 +239,6 @@ static int exec_process(char * const *argv, int start_fd, size_t n_fds) {
 
 static int fork_and_exec_process(char * const *argv, int fd) {
         _cleanup_free_ char *joined = NULL;
-        pid_t child_pid;
         int r;
 
         assert(!strv_isempty(argv));
@@ -240,9 +248,11 @@ static int fork_and_exec_process(char * const *argv, int fd) {
         if (!joined)
                 return log_oom();
 
-        r = safe_fork("(activate)",
-                      FORK_RESET_SIGNALS | FORK_DEATHSIG_SIGTERM | FORK_RLIMIT_NOFILE_SAFE | FORK_LOG,
-                      &child_pid);
+        _cleanup_(pidref_done) PidRef child_pidref = PIDREF_NULL;
+        r = pidref_safe_fork(
+                        "(activate)",
+                        FORK_RESET_SIGNALS|FORK_DEATHSIG_SIGTERM|FORK_RLIMIT_NOFILE_SAFE|FORK_LOG,
+                        &child_pidref);
         if (r < 0)
                 return r;
         if (r == 0) {
@@ -251,7 +261,7 @@ static int fork_and_exec_process(char * const *argv, int fd) {
                 _exit(EXIT_FAILURE);
         }
 
-        log_info("Spawned '%s' as PID " PID_FMT ".", joined, child_pid);
+        log_info("Spawned '%s' as PID " PID_FMT ".", joined, child_pidref.pid);
         return 0;
 }
 

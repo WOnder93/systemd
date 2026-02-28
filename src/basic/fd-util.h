@@ -5,7 +5,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 
-#include "forward.h"
+#include "basic-forward.h"
 
 /* maximum length of fdname */
 #define FDNAME_MAX 255
@@ -57,6 +57,13 @@
 #define NR_OPEN_MINIMUM ((unsigned) (sizeof(long) * 8))
 #define NR_OPEN_MAXIMUM ((unsigned) (CONST_MIN((size_t) INT_MAX, SIZE_MAX / __SIZEOF_POINTER__) & ~(sizeof(long) * 8 - 1)))
 
+/* A special fd that can be passed in various helpers instead of an fd indicating the root dir. Inspired by,
+ * and an alternative to AT_FDCWD. We use specific negative value that is outside of the negative errno
+ * range, to avoid any potential ambiguities. */
+#define XAT_FDROOT -8192
+assert_cc(XAT_FDROOT != AT_FDCWD);
+assert_cc(XAT_FDROOT < -ERRNO_MAX);
+
 int close_nointr(int fd);
 int safe_close(int fd);
 void safe_close_pair(int p[static 2]);
@@ -79,7 +86,7 @@ void close_many_and_free(int *fds, size_t n_fds);
 
 int fclose_nointr(FILE *f);
 FILE* safe_fclose(FILE *f);
-DIR* safe_closedir(DIR *f);
+DIR* safe_closedir(DIR *d);
 
 static inline void closep(int *fd) {
         safe_close(*fd);
@@ -112,6 +119,7 @@ int get_max_fd(void);
 
 int close_all_fds(const int except[], size_t n_except);
 int close_all_fds_without_malloc(const int except[], size_t n_except);
+int close_all_fds_frugal(const int except[], size_t n_except);
 
 int pack_fds(int fds[], size_t n);
 
@@ -149,6 +157,8 @@ int fd_reopen_propagate_append_and_position(int fd, int flags);
 int fd_reopen_condition(int fd, int flags, int mask, int *ret_new_fd);
 
 int fd_is_opath(int fd);
+int fd_vet_accmode(int fd, int mode);
+int fd_is_writable(int fd);
 
 int fd_verify_safe_flags_full(int fd, int extra_flags);
 static inline int fd_verify_safe_flags(int fd) {
@@ -163,13 +173,15 @@ static inline int path_is_root(const char *path) {
         return path_is_root_at(AT_FDCWD, path);
 }
 static inline int dir_fd_is_root(int dir_fd) {
-        return path_is_root_at(dir_fd, NULL);
+        return dir_fd == XAT_FDROOT ? true : path_is_root_at(dir_fd, NULL);
 }
 static inline int dir_fd_is_root_or_cwd(int dir_fd) {
-        return dir_fd == AT_FDCWD ? true : path_is_root_at(dir_fd, NULL);
+        return IN_SET(dir_fd, AT_FDCWD, XAT_FDROOT) ? true : path_is_root_at(dir_fd, NULL);
 }
 
 int fds_are_same_mount(int fd1, int fd2);
+
+int resolve_xat_fdroot(int *fd, const char **path, char **ret_buffer);
 
 /* The maximum length a buffer for a /proc/self/fd/<fd> path needs */
 #define PROC_FD_PATH_MAX \

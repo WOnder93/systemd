@@ -7,8 +7,14 @@
 #include "sd-varlink.h"
 #include "sd-varlink-idl.h"
 
+#include "bootspec.h"
+#include "discover-image.h"
 #include "fd-util.h"
+#include "gpt.h"
+#include "json-util.h"
+#include "network-util.h"
 #include "pretty-print.h"
+#include "resolve-util.h"
 #include "tests.h"
 #include "varlink-idl-util.h"
 #include "varlink-io.systemd.h"
@@ -16,24 +22,31 @@
 #include "varlink-io.systemd.BootControl.h"
 #include "varlink-io.systemd.Credentials.h"
 #include "varlink-io.systemd.FactoryReset.h"
+#include "varlink-io.systemd.Hostname.h"
 #include "varlink-io.systemd.Import.h"
 #include "varlink-io.systemd.Journal.h"
+#include "varlink-io.systemd.JournalAccess.h"
 #include "varlink-io.systemd.Login.h"
 #include "varlink-io.systemd.Machine.h"
 #include "varlink-io.systemd.MachineImage.h"
-#include "varlink-io.systemd.Manager.h"
 #include "varlink-io.systemd.ManagedOOM.h"
+#include "varlink-io.systemd.Manager.h"
 #include "varlink-io.systemd.MountFileSystem.h"
+#include "varlink-io.systemd.MuteConsole.h"
 #include "varlink-io.systemd.NamespaceResource.h"
 #include "varlink-io.systemd.Network.h"
+#include "varlink-io.systemd.Network.Link.h"
 #include "varlink-io.systemd.PCRExtend.h"
 #include "varlink-io.systemd.PCRLock.h"
+#include "varlink-io.systemd.Repart.h"
 #include "varlink-io.systemd.Resolve.h"
+#include "varlink-io.systemd.Resolve.Hook.h"
 #include "varlink-io.systemd.Resolve.Monitor.h"
 #include "varlink-io.systemd.Udev.h"
 #include "varlink-io.systemd.Unit.h"
 #include "varlink-io.systemd.UserDatabase.h"
 #include "varlink-io.systemd.oom.h"
+#include "varlink-io.systemd.oom.Prekill.h"
 #include "varlink-io.systemd.service.h"
 #include "varlink-io.systemd.sysext.h"
 #include "varlink-org.varlink.service.h"
@@ -92,6 +105,13 @@ static SD_VARLINK_DEFINE_STRUCT_TYPE(
                 SD_VARLINK_DEFINE_FIELD(ooona, SD_VARLINK_OBJECT, SD_VARLINK_NULLABLE|SD_VARLINK_ARRAY),
                 SD_VARLINK_DEFINE_FIELD(ooom, SD_VARLINK_OBJECT, SD_VARLINK_MAP),
                 SD_VARLINK_DEFINE_FIELD(ooonm, SD_VARLINK_OBJECT, SD_VARLINK_NULLABLE|SD_VARLINK_MAP),
+
+                SD_VARLINK_DEFINE_FIELD(aaa, SD_VARLINK_ANY, 0),
+                SD_VARLINK_DEFINE_FIELD(aaan, SD_VARLINK_ANY, SD_VARLINK_NULLABLE),
+                SD_VARLINK_DEFINE_FIELD(aaaa, SD_VARLINK_ANY, SD_VARLINK_ARRAY),
+                SD_VARLINK_DEFINE_FIELD(aaana, SD_VARLINK_ANY, SD_VARLINK_NULLABLE|SD_VARLINK_ARRAY),
+                SD_VARLINK_DEFINE_FIELD(aaam, SD_VARLINK_ANY, SD_VARLINK_MAP),
+                SD_VARLINK_DEFINE_FIELD(aaanm, SD_VARLINK_ANY, SD_VARLINK_NULLABLE|SD_VARLINK_MAP),
 
                 SD_VARLINK_DEFINE_FIELD_BY_TYPE(eee, EnumTest, 0),
                 SD_VARLINK_DEFINE_FIELD_BY_TYPE(eeen, EnumTest, SD_VARLINK_NULLABLE),
@@ -162,59 +182,50 @@ static void test_parse_format_one(const sd_varlink_interface *iface) {
 }
 
 TEST(parse_format) {
-        test_parse_format_one(&vl_interface_org_varlink_service);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_UserDatabase);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_NamespaceResource);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_Journal);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_Resolve);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_Resolve_Monitor);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_ManagedOOM);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_MountFileSystem);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_Network);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_oom);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_PCRExtend);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_PCRLock);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_service);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_sysext);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_Credentials);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_BootControl);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_Import);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_Machine);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_MachineImage);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_Manager);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_AskPassword);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_Udev);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_Login);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_FactoryReset);
-        print_separator();
-        test_parse_format_one(&vl_interface_io_systemd_Unit);
-        print_separator();
-        test_parse_format_one(&vl_interface_xyz_test);
+        const sd_varlink_interface* const list[] = {
+                &vl_interface_io_systemd,
+                &vl_interface_io_systemd_AskPassword,
+                &vl_interface_io_systemd_BootControl,
+                &vl_interface_io_systemd_Credentials,
+                &vl_interface_io_systemd_FactoryReset,
+                &vl_interface_io_systemd_Hostname,
+                &vl_interface_io_systemd_Import,
+                &vl_interface_io_systemd_Journal,
+                &vl_interface_io_systemd_JournalAccess,
+                &vl_interface_io_systemd_Login,
+                &vl_interface_io_systemd_Machine,
+                &vl_interface_io_systemd_MachineImage,
+                &vl_interface_io_systemd_ManagedOOM,
+                &vl_interface_io_systemd_Manager,
+                &vl_interface_io_systemd_MountFileSystem,
+                &vl_interface_io_systemd_MuteConsole,
+                &vl_interface_io_systemd_NamespaceResource,
+                &vl_interface_io_systemd_Network,
+                &vl_interface_io_systemd_Network_Link,
+                &vl_interface_io_systemd_PCRExtend,
+                &vl_interface_io_systemd_PCRLock,
+                &vl_interface_io_systemd_Repart,
+                &vl_interface_io_systemd_Resolve,
+                &vl_interface_io_systemd_Resolve_Hook,
+                &vl_interface_io_systemd_Resolve_Monitor,
+                &vl_interface_io_systemd_Udev,
+                &vl_interface_io_systemd_Unit,
+                &vl_interface_io_systemd_UserDatabase,
+                &vl_interface_io_systemd_oom,
+                &vl_interface_io_systemd_oom_Prekill,
+                &vl_interface_io_systemd_service,
+                &vl_interface_io_systemd_sysext,
+                &vl_interface_org_varlink_service,
+                &vl_interface_xyz_test,
+        };
+
+        bool sep = false;
+        FOREACH_ELEMENT(i, list) {
+                if (sep)
+                        print_separator();
+                test_parse_format_one(*i);
+                sep = true;
+        }
 }
 
 TEST(parse) {
@@ -271,6 +282,7 @@ TEST(symbol_name_is_valid) {
         assert_se(!varlink_idl_symbol_name_is_valid("float"));
         assert_se(!varlink_idl_symbol_name_is_valid("string"));
         assert_se(!varlink_idl_symbol_name_is_valid("object"));
+        assert_se(!varlink_idl_symbol_name_is_valid("any"));
 }
 
 TEST(field_name_is_valid) {
@@ -465,6 +477,108 @@ TEST(validate_method_call) {
         assert_se(sd_varlink_send(v, "xyz.Done", NULL) >= 0);
         assert_se(sd_varlink_flush(v) >= 0);
         assert_se(pthread_join(t, NULL) == 0);
+}
+
+static void test_enum_to_string_name(const char *n, const sd_varlink_symbol *symbol) {
+        assert(n);
+        assert(symbol);
+
+        assert(symbol->symbol_type == SD_VARLINK_ENUM_TYPE);
+        _cleanup_free_ char *m = ASSERT_PTR(json_underscorify(strdup(n)));
+
+        bool found = false;
+        for (const sd_varlink_field *f = symbol->fields; f->name; f++) {
+                if (f->field_type == _SD_VARLINK_FIELD_COMMENT)
+                        continue;
+
+                assert(f->field_type == SD_VARLINK_ENUM_VALUE);
+                if (streq(m, f->name)) {
+                        found = true;
+                        break;
+                }
+        }
+
+        log_debug("'%s' found in '%s': %s", m, strna(symbol->name), yes_no(found));
+        assert(found);
+}
+
+#define TEST_IDL_ENUM_TO_STRING(type, ename, symbol)     \
+        for (type t = 0;; t++) {                         \
+                const char *n = ename##_to_string(t);    \
+                if (!n)                                  \
+                        break;                           \
+                test_enum_to_string_name(n, &(symbol));  \
+        }
+
+#define TEST_IDL_ENUM_FROM_STRING(type, ename, symbol)                  \
+        for (const sd_varlink_field *f = (symbol).fields; f->name; f++) { \
+                if (f->field_type == _SD_VARLINK_FIELD_COMMENT)         \
+                        continue;                                       \
+                assert(f->field_type == SD_VARLINK_ENUM_VALUE);         \
+                _cleanup_free_ char *m = ASSERT_PTR(json_dashify(strdup(f->name))); \
+                type t = ename##_from_string(m);                        \
+                log_debug("'%s' of '%s' translates: %s", f->name, strna((symbol).name), yes_no(t >= 0)); \
+                assert(t >= 0);                                         \
+        }
+
+#define TEST_IDL_ENUM(type, name, symbol)                       \
+        do {                                                    \
+                TEST_IDL_ENUM_TO_STRING(type, name, symbol);    \
+                TEST_IDL_ENUM_FROM_STRING(type, name, symbol);  \
+        } while (false)
+
+TEST(enums_idl) {
+        TEST_IDL_ENUM(BootEntryType, boot_entry_type, vl_type_BootEntryType);
+        TEST_IDL_ENUM_TO_STRING(BootEntrySource, boot_entry_source, vl_type_BootEntrySource);
+
+        TEST_IDL_ENUM(PartitionDesignator, partition_designator, vl_type_PartitionDesignator);
+
+        TEST_IDL_ENUM(LinkAddressState, link_address_state, vl_type_LinkAddressState);
+        TEST_IDL_ENUM_TO_STRING(LinkAddressState, link_address_state, vl_type_LinkAddressState);
+        TEST_IDL_ENUM(LinkOnlineState, link_online_state, vl_type_LinkOnlineState);
+        TEST_IDL_ENUM_TO_STRING(LinkOnlineState, link_online_state, vl_type_LinkOnlineState);
+        TEST_IDL_ENUM(AddressFamily, link_required_address_family, vl_type_LinkRequiredAddressFamily);
+        TEST_IDL_ENUM_TO_STRING(AddressFamily, link_required_address_family, vl_type_LinkRequiredAddressFamily);
+
+        TEST_IDL_ENUM(DnsOverTlsMode, dns_over_tls_mode, vl_type_DNSOverTLSMode);
+        TEST_IDL_ENUM(ResolveSupport, resolve_support, vl_type_ResolveSupport);
+
+        TEST_IDL_ENUM(ImageType, image_type, vl_type_ImageType);
+        TEST_IDL_ENUM_TO_STRING(ImageType, image_type, vl_type_ImageType);
+}
+
+static SD_VARLINK_DEFINE_METHOD(
+                AnyTestStrict,
+                SD_VARLINK_DEFINE_INPUT(foo, SD_VARLINK_ANY, 0),
+                SD_VARLINK_DEFINE_INPUT(foo2, SD_VARLINK_ANY, 0),
+                SD_VARLINK_DEFINE_INPUT(foo3, SD_VARLINK_ANY, 0),
+                SD_VARLINK_DEFINE_INPUT(foo4, SD_VARLINK_ANY, 0));
+
+static SD_VARLINK_DEFINE_METHOD(
+                AnyTestNullable,
+                SD_VARLINK_DEFINE_INPUT(foo, SD_VARLINK_ANY, SD_VARLINK_NULLABLE),
+                SD_VARLINK_DEFINE_INPUT(foo2, SD_VARLINK_ANY, SD_VARLINK_NULLABLE),
+                SD_VARLINK_DEFINE_INPUT(foo3, SD_VARLINK_ANY, SD_VARLINK_NULLABLE),
+                SD_VARLINK_DEFINE_INPUT(foo4, SD_VARLINK_ANY, SD_VARLINK_NULLABLE));
+
+TEST(any) {
+        _cleanup_(sd_json_variant_unrefp) sd_json_variant *v = NULL;
+
+        ASSERT_OK(sd_json_buildo(&v,
+                                 SD_JSON_BUILD_PAIR_STRING("foo", "bar"),
+                                 SD_JSON_BUILD_PAIR_INTEGER("foo2", 47),
+                                 SD_JSON_BUILD_PAIR_NULL("foo3"),
+                                 SD_JSON_BUILD_PAIR_BOOLEAN("foo4", true)));
+
+        /* "any" shall mean any type – but null */
+        const char *bad_field = NULL;
+        ASSERT_ERROR(varlink_idl_validate_method_call(&vl_method_AnyTestStrict, v, /* flags= */ 0, &bad_field), ENOANO);
+        ASSERT_STREQ(bad_field, "foo3");
+
+        /* "any?" shall many truly any type */
+        bad_field = NULL;
+        ASSERT_OK(varlink_idl_validate_method_call(&vl_method_AnyTestNullable, v, /* flags= */ 0, &bad_field));
+        ASSERT_NULL(bad_field);
 }
 
 DEFINE_TEST_MAIN(LOG_DEBUG);

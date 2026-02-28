@@ -130,11 +130,11 @@
 
     <itemizedlist>
       <listitem><para>Only disk image based containers are supported (i.e. <option>--image=</option>).
-      Directory based ones (i.e. <option>--directory=</option>) are not supported.</para></listitem>
+      Directory based ones (i.e. <option>--directory=</option>) are only supported if owned by the "foreign"
+      UID range.</para></listitem>
 
-      <listitem><para>Machine registration via <option>--machine=</option> is not supported.</para></listitem>
-
-      <listitem><para>Only <option>--private-network</option> and <option>--network-veth</option> networking modes are supported.</para></listitem>
+      <listitem><para>Only <option>--private-network</option> and <option>--network-veth</option> networking
+      modes are supported.</para></listitem>
     </itemizedlist>
 
     <para>When running in unprivileged mode, some needed functionality is provided via
@@ -327,14 +327,12 @@
           partition of type
           0fc63daf-8483-4772-8e79-3d69d8477de4.</para></listitem>
 
-          <listitem><para>A GUID partition table (GPT) with a marked
-          root partition which is mounted as the root directory of the
-          container. Optionally, GPT images may contain a home and/or
-          a server data partition which are mounted to the appropriate
-          places in the container. All these partitions must be
-          identified by the partition types defined by the <ulink
-          url="https://uapi-group.org/specifications/specs/discoverable_partitions_specification">Discoverable
-          Partitions Specification</ulink>.</para></listitem>
+          <listitem><para>A GUID partition table (GPT) with a marked root partition which is mounted as the
+          root directory of the container. Optionally, GPT images may contain a home and/or a server data
+          partition which are mounted to the appropriate places in the container. All these partitions must
+          be identified by the partition types defined by the <ulink
+          url="https://uapi-group.org/specifications/specs/discoverable_partitions_specification">UAPI.2
+          Discoverable Partitions Specification</ulink>.</para></listitem>
 
           <listitem><para>No partition table, and a single file system spanning the whole image.</para></listitem>
         </itemizedlist>
@@ -370,6 +368,18 @@
         i.e. all recognized file systems in the image are used, but not the swap partition.</para>
 
         <xi:include href="version-info.xml" xpointer="v254"/></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>--mstack=</option></term>
+
+        <listitem><para>Mount stack to mount the root directory for the container from. Takes a path to a
+        directory implementing
+        <citerefentry><refentrytitle>systemd.mstack</refentrytitle><manvolnum>7</manvolnum></citerefentry>. This
+        may be used to run a container of an <literal>overlayfs</literal> assembled from a number of layers,
+        possibly writable and augmented with additional bind mounts.</para>
+
+        <xi:include href="version-info.xml" xpointer="v260"/></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -626,11 +636,10 @@
         provides protection against accidental destructive operations only.</para>
 
         <para>Note that if credentials are used in combination with a non-root <option>--user=</option>
-        (e.g.: <option>--set-credential=</option>, <option>--load-credential=</option> or
-        <option>--import-credential=</option>), then <option>--no-new-privileges=yes</option> must be used, and
-        <option>--boot</option> or <option>--as-pid2</option> must not be used, as the credentials would
-        otherwise be unreadable by the container due to missing privileges after switching to the specified
-        user.</para></listitem>
+        (e.g.: <option>--set-credential=</option> or <option>--load-credential=</option>), then
+        <option>--no-new-privileges=yes</option> must be used, and <option>--boot</option> or
+        <option>--as-pid2</option> must not be used, as the credentials would otherwise be unreadable
+        by the container due to missing privileges after switching to the specified user.</para></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -924,9 +933,36 @@
 
         <para><citerefentry><refentrytitle>systemd-dissect</refentrytitle><manvolnum>1</manvolnum></citerefentry>'s
         <option>--shift</option> switch may be used to shift UID/GID ownership from or to the 0, foreign or
-        specific container UID/GID base outside of any <command>systemd-nspawn</command></para> invocation.
+        specific container UID/GID base outside of any <command>systemd-nspawn</command> invocation.</para>
 
         <xi:include href="version-info.xml" xpointer="v230"/></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>--private-users-delegate=</option></term>
+
+        <listitem><para>Takes a non-negative integer. Requests that the specified number of additional 64K
+        UID/GID ranges are delegated into the container's user namespace. These delegated ranges are mapped
+        1:1 (i.e. the same UID/GID values are used inside and outside the user namespace) and can be used by
+        nested containers to allocate their own transient UID/GID ranges via
+        <citerefentry><refentrytitle>systemd-nsresourced.service</refentrytitle><manvolnum>8</manvolnum></citerefentry>.</para>
+
+        <para>This option requires <option>--private-users=managed</option>, as the delegation is performed
+        by
+        <citerefentry><refentrytitle>systemd-nsresourced.service</refentrytitle><manvolnum>8</manvolnum></citerefentry>
+        as part of the user namespace allocation. The maximum number of delegated ranges is 16. Defaults to
+        0, i.e. no delegation.</para>
+
+        <para>When this option is used with a non-zero value, the
+        <citerefentry><refentrytitle>systemd-nsresourced.service</refentrytitle><manvolnum>8</manvolnum></citerefentry>
+        Varlink socket (<filename>/run/systemd/io.systemd.NamespaceResource</filename>) is automatically
+        bind-mounted into the container along with the necessary discovery symlinks in
+        <filename>/run/systemd/userdb/</filename> and <filename>/run/varlink/registry/</filename>. This
+        allows processes inside the container to contact
+        <command>systemd-nsresourced</command> on the host in order to allocate nested user namespaces from
+        the delegated ranges.</para>
+
+        <xi:include href="version-info.xml" xpointer="v260"/></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -1601,7 +1637,7 @@ After=sys-subsystem-net-devices-ens1.device</programlisting>
 
         <listitem><para>Binds the home directory of the specified user on the host into the container. Takes
         the name of an existing user on the host as argument. May be used multiple times to bind multiple
-        users into the container. This does three things:</para>
+        users into the container. This does two things:</para>
 
         <orderedlist>
           <listitem><para>The user's home directory is bind mounted from the host into
@@ -1616,7 +1652,7 @@ After=sys-subsystem-net-devices-ens1.device</programlisting>
           user/group databases.</para></listitem>
         </orderedlist>
 
-        <para>The combination of the three operations above ensures that it is possible to log into the
+        <para>The combination of the two operations above ensures that it is possible to log into the
         container using the same account information as on the host. The user is only mapped transiently,
         while the container is running, and the mapping itself does not result in persistent changes to the
         container (except maybe for log messages generated at login time, and similar). Note that in
@@ -1665,6 +1701,19 @@ After=sys-subsystem-net-devices-ens1.device</programlisting>
         <para>This operation is only supported in combination with <option>--bind-user=</option>.</para>
 
         <xi:include href="version-info.xml" xpointer="v258"/></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>--bind-user-group=<replaceable>NAME</replaceable></option></term>
+
+        <listitem><para>When used with <option>--bind-user=</option>, includes the specified group as an
+        auxiliary group in the user records of users bound into the container. Takes a group name.</para>
+
+        <para>Note: This will not check whether the specified groups exist in the container.</para>
+
+        <para>This operation is only supported in combination with <option>--bind-user=</option>.</para>
+
+        <xi:include href="version-info.xml" xpointer="v259"/></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -2028,6 +2077,7 @@ After=sys-subsystem-net-devices-ens1.device</programlisting>
       <member><citerefentry><refentrytitle>importctl</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
       <member><citerefentry><refentrytitle>systemd-mountfsd.service</refentrytitle><manvolnum>8</manvolnum></citerefentry></member>
       <member><citerefentry><refentrytitle>systemd-nsresourced.service</refentrytitle><manvolnum>8</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.mstack</refentrytitle><manvolnum>7</manvolnum></citerefentry></member>
       <member><citerefentry project='url'><refentrytitle url='https://btrfs.readthedocs.io/en/latest/btrfs.html'>btrfs</refentrytitle><manvolnum>8</manvolnum></citerefentry></member>
     </simplelist></para>
   </refsect1>

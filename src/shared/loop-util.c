@@ -375,6 +375,44 @@ static int loop_configure(
         return 0;
 }
 
+static int fd_get_max_discard(int fd, uint64_t *ret) {
+        struct stat st;
+        char sysfs_path[STRLEN("/sys/dev/block/" ":" "/queue/discard_max_bytes") + DECIMAL_STR_MAX(dev_t) * 2 + 1];
+        _cleanup_free_ char *buffer = NULL;
+        int r;
+
+        assert(ret);
+
+        if (fstat(ASSERT_FD(fd), &st) < 0)
+                return -errno;
+
+        if (!S_ISBLK(st.st_mode))
+                return -ENOTBLK;
+
+        xsprintf(sysfs_path, "/sys/dev/block/" DEVNUM_FORMAT_STR "/queue/discard_max_bytes", DEVNUM_FORMAT_VAL(st.st_rdev));
+
+        r = read_one_line_file(sysfs_path, &buffer);
+        if (r < 0)
+                return r;
+
+        return safe_atou64(buffer, ret);
+}
+
+static int fd_set_max_discard(int fd, uint64_t max_discard) {
+        struct stat st;
+        char sysfs_path[STRLEN("/sys/dev/block/" ":" "/queue/discard_max_bytes") + DECIMAL_STR_MAX(dev_t) * 2 + 1];
+
+        if (fstat(ASSERT_FD(fd), &st) < 0)
+                return -errno;
+
+        if (!S_ISBLK(st.st_mode))
+                return -ENOTBLK;
+
+        xsprintf(sysfs_path, "/sys/dev/block/" DEVNUM_FORMAT_STR "/queue/discard_max_bytes", DEVNUM_FORMAT_VAL(st.st_rdev));
+
+        return write_string_filef(sysfs_path, WRITE_STRING_FILE_DISABLE_BUFFER, "%" PRIu64, max_discard);
+}
+
 static int loop_device_make_internal(
                 const char *path,
                 int fd,
@@ -393,10 +431,25 @@ static int loop_device_make_internal(
         int r, f_flags;
         struct stat st;
 
+        assert(fd >= 0);
+        assert(open_flags < 0 || IN_SET(open_flags, O_RDWR, O_RDONLY));
         assert(ret);
-        assert(IN_SET(open_flags, O_RDWR, O_RDONLY));
 
-        if (fstat(ASSERT_FD(fd), &st) < 0)
+        f_flags = fcntl(fd, F_GETFL);
+        if (f_flags < 0)
+                return -errno;
+
+        if (open_flags < 0) {
+                /* If open_flags is unset, initialize it from the open fd */
+                if (FLAGS_SET(f_flags, O_PATH))
+                        return log_debug_errno(SYNTHETIC_ERRNO(EBADFD), "Access mode of image file indicates O_PATH, cannot determine read/write flags.");
+
+                open_flags = f_flags & O_ACCMODE_STRICT;
+                if (!IN_SET(open_flags, O_RDWR, O_RDONLY))
+                        return log_debug_errno(SYNTHETIC_ERRNO(EBADFD), "Access mode of image file is write only (?)");
+        }
+
+        if (fstat(fd, &st) < 0)
                 return -errno;
 
         if (S_ISBLK(st.st_mode)) {
@@ -422,10 +475,6 @@ static int loop_device_make_internal(
                 if (r < 0)
                         return r;
         }
-
-        f_flags = fcntl(fd, F_GETFL);
-        if (f_flags < 0)
-                return -errno;
 
         if (FLAGS_SET(loop_flags, LO_FLAGS_DIRECT_IO) != FLAGS_SET(f_flags, O_DIRECT)) {
                 /* If LO_FLAGS_DIRECT_IO is requested, then make sure we have the fd open with O_DIRECT, as
@@ -572,6 +621,23 @@ static int loop_device_make_internal(
                 (void) usleep_safe(usec);
         }
 
+        if (S_ISBLK(st.st_mode)) {
+                /* Propagate backing device's discard byte limit to our loopback block device. We do this in
+                 * order to avoid that (supposedly quick) discard requests on the loopback device get turned
+                 * into (likely slow) zero-out requests on backing devices that do not support discarding
+                 * natively, but do support zero-out. */
+                uint64_t discard_max_bytes;
+
+                r = fd_get_max_discard(fd, &discard_max_bytes);
+                if (r < 0)
+                        log_debug_errno(r, "Failed to read 'discard_max_bytes' of backing device, ignoring: %m");
+                else {
+                        r = fd_set_max_discard(d->fd, discard_max_bytes);
+                        if (r < 0)
+                                log_debug_errno(r, "Failed to write 'discard_max_bytes' of loop device, ignoring: %m");
+                }
+        }
+
         d->backing_file = TAKE_PTR(backing_file);
         d->backing_inode = st.st_ino;
         d->backing_devno = st.st_dev;
@@ -635,7 +701,6 @@ int loop_device_make_by_path_at(
         bool direct = false;
 
         assert(dir_fd >= 0 || dir_fd == AT_FDCWD);
-        assert(path);
         assert(ret);
         assert(open_flags < 0 || IN_SET(open_flags, O_RDWR, O_RDONLY));
 
@@ -675,8 +740,8 @@ int loop_device_make_by_path_at(
         } else if (open_flags < 0)
                 open_flags = O_RDWR;
 
-        log_debug("Opened '%s' in %s access mode%s, with O_DIRECT %s%s.",
-                  path,
+        log_debug("Opened %s in %s access mode%s, with O_DIRECT %s%s.",
+                  path ?: "loop device",
                   open_flags == O_RDWR ? "O_RDWR" : "O_RDONLY",
                   open_flags != rdwr_flags ? " (O_RDWR was requested but not allowed)" : "",
                   direct ? "enabled" : "disabled",
@@ -686,8 +751,8 @@ int loop_device_make_by_path_at(
                         dir_fd == AT_FDCWD ? path : NULL,
                         fd,
                         open_flags,
-                        /* offset = */ 0,
-                        /* size = */ 0,
+                        /* offset= */ 0,
+                        /* size= */ 0,
                         sector_size,
                         loop_flags,
                         lock_op,
@@ -1064,9 +1129,8 @@ int loop_device_refresh_size(LoopDevice *d, uint64_t offset, uint64_t size) {
         VALGRIND_MAKE_MEM_DEFINED(&info, sizeof(info));
 #endif
 
-        if (size == UINT64_MAX && offset == UINT64_MAX)
-                return 0;
-        if (info.lo_sizelimit == size && info.lo_offset == offset)
+        if ((size == UINT64_MAX || info.lo_sizelimit == size) &&
+            (offset == UINT64_MAX || info.lo_offset == offset))
                 return 0;
 
         if (size != UINT64_MAX)

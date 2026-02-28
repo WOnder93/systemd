@@ -52,10 +52,12 @@ typedef enum OOMPolicy {
 } OOMPolicy;
 
 typedef enum StatusType {
-        STATUS_TYPE_EPHEMERAL,
+        STATUS_TYPE_EPHEMERAL,   /* ordered by severity! Do not break order */
         STATUS_TYPE_NORMAL,
         STATUS_TYPE_NOTICE,
         STATUS_TYPE_EMERGENCY,
+        _STATUS_TYPE_MAX,
+        _STATUS_TYPE_INVALID = -EINVAL,
 } StatusType;
 
 static inline bool UNIT_IS_ACTIVE_OR_RELOADING(UnitActiveState t) {
@@ -161,10 +163,10 @@ typedef struct ActivationDetails {
 ActivationDetails *activation_details_new(Unit *trigger_unit);
 ActivationDetails *activation_details_ref(ActivationDetails *p);
 ActivationDetails *activation_details_unref(ActivationDetails *p);
-void activation_details_serialize(const ActivationDetails *p, FILE *f);
-int activation_details_deserialize(const char *key, const char *value, ActivationDetails **info);
-int activation_details_append_env(const ActivationDetails *info, char ***strv);
-int activation_details_append_pair(const ActivationDetails *info, char ***strv);
+void activation_details_serialize(const ActivationDetails *details, FILE *f);
+int activation_details_deserialize(const char *key, const char *value, ActivationDetails **details);
+int activation_details_append_env(const ActivationDetails *details, char ***strv);
+int activation_details_append_pair(const ActivationDetails *details, char ***strv);
 DEFINE_TRIVIAL_CLEANUP_FUNC(ActivationDetails*, activation_details_unref);
 
 typedef struct ActivationDetailsVTable {
@@ -173,24 +175,24 @@ typedef struct ActivationDetailsVTable {
 
         /* This should reset all type-specific variables. This should not allocate memory, and is called
          * with zero-initialized data. It should hence only initialize variables that need to be set != 0. */
-        void (*init)(ActivationDetails *info, Unit *trigger_unit);
+        void (*init)(ActivationDetails *details, Unit *trigger_unit);
 
         /* This should free all type-specific variables. It should be idempotent. */
-        void (*done)(ActivationDetails *info);
+        void (*done)(ActivationDetails *details);
 
         /* This should serialize all type-specific variables. */
-        void (*serialize)(const ActivationDetails *info, FILE *f);
+        void (*serialize)(const ActivationDetails *details, FILE *f);
 
         /* This should deserialize all type-specific variables, one at a time. */
-        int (*deserialize)(const char *key, const char *value, ActivationDetails **info);
+        int (*deserialize)(const char *key, const char *value, ActivationDetails **details);
 
         /* This should format the type-specific variables for the env block of the spawned service,
          * and return the number of added items. */
-        int (*append_env)(const ActivationDetails *info, char ***strv);
+        int (*append_env)(const ActivationDetails *details, char ***strv);
 
         /* This should append type-specific variables as key/value pairs for the D-Bus property of the job,
          * and return the number of added pairs. */
-        int (*append_pair)(const ActivationDetails *info, char ***strv);
+        int (*append_pair)(const ActivationDetails *details, char ***strv);
 } ActivationDetailsVTable;
 
 extern const ActivationDetailsVTable * const activation_details_vtable[_UNIT_TYPE_MAX];
@@ -598,8 +600,8 @@ typedef struct UnitVTable {
         bool (*can_reload)(Unit *u);
 
         /* Add a bind/image mount into the unit namespace while it is running. */
-        int (*live_mount)(Unit *u, const char *src, const char *dst, sd_bus_message *message, MountInNamespaceFlags flags, const MountOptions *options, sd_bus_error *error);
-        int (*can_live_mount)(Unit *u, sd_bus_error *error);
+        int (*live_mount)(Unit *u, const char *src, const char *dst, sd_bus_message *message, MountInNamespaceFlags flags, const MountOptions *options, sd_bus_error *reterr_error);
+        int (*can_live_mount)(Unit *u, sd_bus_error *reterr_error);
 
         /* Serialize state and file descriptors that should be carried over into the new
          * instance after reexecution. */
@@ -659,7 +661,7 @@ typedef struct UnitVTable {
         void (*bus_name_owner_change)(Unit *u, const char *new_owner);
 
         /* Called for each property that is being set */
-        int (*bus_set_property)(Unit *u, const char *name, sd_bus_message *message, UnitWriteFlags flags, sd_bus_error *error);
+        int (*bus_set_property)(Unit *u, const char *name, sd_bus_message *message, UnitWriteFlags flags, sd_bus_error *reterr_error);
 
         /* Called after at least one property got changed to apply the necessary change */
         int (*bus_commit_properties)(Unit *u);
@@ -724,8 +726,8 @@ typedef struct UnitVTable {
         bool (*supported)(void);
 
         /* If this function is set, it's invoked first as part of starting a unit to allow start rate
-         * limiting checks to occur before we do anything else. */
-        int (*can_start)(Unit *u);
+         * limiting checks and unit state checks to occur before we do anything else. */
+        int (*test_startable)(Unit *u);
 
         /* Returns > 0 if the whole subsystem is ratelimited, and new start operations should not be started
          * for this unit type right now. */
@@ -817,7 +819,7 @@ Unit* unit_free(Unit *u);
 DEFINE_TRIVIAL_CLEANUP_FUNC(Unit *, unit_free);
 
 int unit_new_for_name(Manager *m, size_t size, const char *name, Unit **ret);
-int unit_add_name(Unit *u, const char *name);
+int unit_add_name(Unit *u, const char *text);
 
 int unit_add_dependency(Unit *u, UnitDependency d, Unit *other, bool add_reference, UnitDependencyMask mask);
 int unit_add_two_dependencies(Unit *u, UnitDependency d, UnitDependency e, Unit *other, bool add_reference, UnitDependencyMask mask);
@@ -858,7 +860,7 @@ void unit_add_to_stop_notify_queue(Unit *u);
 void unit_remove_from_stop_notify_queue(Unit *u);
 
 int unit_merge(Unit *u, Unit *other);
-int unit_merge_by_name(Unit *u, const char *other);
+int unit_merge_by_name(Unit *u, const char *name);
 
 Unit *unit_follow_merge(Unit *u) _pure_;
 
@@ -869,7 +871,7 @@ int unit_set_slice(Unit *u, Unit *slice);
 int unit_set_default_slice(Unit *u);
 
 const char* unit_description(Unit *u) _pure_;
-const char* unit_status_string(Unit *u, char **combined);
+const char* unit_status_string(Unit *u, char **ret_combined_buffer);
 
 bool unit_has_name(const Unit *u, const char *name);
 
@@ -965,7 +967,7 @@ const char* unit_escape_setting(const char *s, UnitWriteFlags flags, char **buf)
 char* unit_concat_strv(char **l, UnitWriteFlags flags);
 
 int unit_write_setting(Unit *u, UnitWriteFlags flags, const char *name, const char *data);
-int unit_write_settingf(Unit *u, UnitWriteFlags mode, const char *name, const char *format, ...) _printf_(4,5);
+int unit_write_settingf(Unit *u, UnitWriteFlags flags, const char *name, const char *format, ...) _printf_(4,5);
 
 int unit_kill_context(Unit *u, KillOperation k);
 
@@ -1001,8 +1003,9 @@ void unit_notify_user_lookup(Unit *u, uid_t uid, gid_t gid);
 int unit_set_invocation_id(Unit *u, sd_id128_t id);
 int unit_acquire_invocation_id(Unit *u);
 
-int unit_set_exec_params(Unit *s, ExecParameters *p);
+int unit_set_exec_params(Unit *u, ExecParameters *p);
 
+int unit_fork_helper_process_full(Unit *u, const char *name, bool into_cgroup, ForkFlags flags, PidRef *ret);
 int unit_fork_helper_process(Unit *u, const char *name, bool into_cgroup, PidRef *ret);
 int unit_fork_and_watch_rm_rf(Unit *u, char **paths, PidRef *ret);
 
@@ -1019,7 +1022,7 @@ int unit_warn_leftover_processes(Unit *u, bool start);
 
 bool unit_needs_console(Unit *u);
 
-int unit_pid_attachable(Unit *unit, PidRef *pid, sd_bus_error *error);
+int unit_pid_attachable(Unit *unit, PidRef *pid, sd_bus_error *reterr_error);
 
 static inline bool unit_has_job_type(Unit *u, JobType type) {
         return u && u->job && u->job->type == type;
@@ -1063,8 +1066,15 @@ void unit_next_freezer_state(Unit *u, FreezerAction action, FreezerState *ret_ne
 void unit_set_freezer_state(Unit *u, FreezerState state);
 void unit_freezer_complete(Unit *u, FreezerState kernel_state);
 
-int unit_can_live_mount(Unit *u, sd_bus_error *error);
-int unit_live_mount(Unit *u, const char *src, const char *dst, sd_bus_message *message, MountInNamespaceFlags flags, const MountOptions *options, sd_bus_error *error);
+int unit_can_live_mount(Unit *u, sd_bus_error *reterr_error);
+int unit_live_mount(
+                Unit *u,
+                const char *src,
+                const char *dst,
+                sd_bus_message *message,
+                MountInNamespaceFlags flags,
+                const MountOptions *options,
+                sd_bus_error *reterr_error);
 
 Condition *unit_find_failed_condition(Unit *u);
 
@@ -1077,12 +1087,15 @@ int unit_compare_priority(Unit *a, Unit *b);
 const char* unit_log_field(const Unit *u);
 const char* unit_invocation_log_field(const Unit *u);
 
-UnitMountDependencyType unit_mount_dependency_type_from_string(const char *s) _const_;
-const char* unit_mount_dependency_type_to_string(UnitMountDependencyType t) _const_;
+DECLARE_STRING_TABLE_LOOKUP(unit_mount_dependency_type, UnitMountDependencyType);
 UnitDependency unit_mount_dependency_type_to_dependency_type(UnitMountDependencyType t) _pure_;
 
-const char* oom_policy_to_string(OOMPolicy i) _const_;
-OOMPolicy oom_policy_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(oom_policy, OOMPolicy);
+
+int unit_queue_job_check_and_mangle_type(Unit *u, JobType *type, bool reload_if_possible, sd_bus_error *reterr_error);
+
+int parse_unit_marker(const char *marker, unsigned *settings, unsigned *mask);
+unsigned unit_normalize_markers(unsigned existing_markers, unsigned new_markers);
 
 /* Macros which append UNIT= or USER_UNIT= to the message */
 
@@ -1158,8 +1171,7 @@ OOMPolicy oom_policy_from_string(const char *s) _pure_;
 #define LOG_UNIT_ID(unit) LOG_ITEM("%s%s", unit_log_field((unit)), (unit)->id)
 #define LOG_UNIT_INVOCATION_ID(unit) LOG_ITEM("%s%s", unit_invocation_log_field((unit)), (unit)->invocation_id_string)
 
-const char* collect_mode_to_string(CollectMode m) _const_;
-CollectMode collect_mode_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(collect_mode, CollectMode);
 
 typedef struct UnitForEachDependencyData {
         /* Stores state for the FOREACH macro below for iterating through all deps that have any of the

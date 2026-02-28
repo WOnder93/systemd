@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #pragma once
 
-#include "forward.h"
+#include "basic-forward.h"
 #include "lock-util.h"
 
 /* The following macros add 1 when converting things, since 0 is a valid mode, while the pointer
@@ -42,14 +42,15 @@ int fd_warn_permissions(const char *path, int fd);
 int stat_warn_permissions(const char *path, const struct stat *st);
 
 int access_nofollow(const char *path, int mode);
+int access_fd(int fd, int mode);
 
 int touch_fd(int fd, usec_t stamp);
 int touch_file(const char *path, bool parents, usec_t stamp, uid_t uid, gid_t gid, mode_t mode);
 int touch(const char *path);
 
-int symlinkat_idempotent(const char *from, int atfd, const char *to, bool make_relative);
-static inline int symlink_idempotent(const char *from, const char *to, bool make_relative) {
-        return symlinkat_idempotent(from, AT_FDCWD, to, make_relative);
+int symlinkat_idempotent(const char *target, int atfd, const char *linkpath, bool make_relative);
+static inline int symlink_idempotent(const char *target, const char *linkpath, bool make_relative) {
+        return symlinkat_idempotent(target, AT_FDCWD, linkpath, make_relative);
 }
 
 typedef enum SymlinkFlags {
@@ -57,9 +58,9 @@ typedef enum SymlinkFlags {
         SYMLINK_LABEL         = 1 << 1,
 } SymlinkFlags;
 
-int symlinkat_atomic_full(const char *from, int atfd, const char *to, SymlinkFlags flags);
-static inline int symlink_atomic(const char *from, const char *to) {
-        return symlinkat_atomic_full(from, AT_FDCWD, to, 0);
+int symlinkat_atomic_full(const char *target, int atfd, const char *linkpath, SymlinkFlags flags);
+static inline int symlink_atomic(const char *target, const char *linkpath) {
+        return symlinkat_atomic_full(target, AT_FDCWD, linkpath, 0);
 }
 
 int mknodat_atomic(int atfd, const char *path, mode_t mode, dev_t dev);
@@ -85,8 +86,6 @@ DEFINE_TRIVIAL_CLEANUP_FUNC(char*, rmdir_and_free);
 
 char* unlink_and_free(char *p);
 DEFINE_TRIVIAL_CLEANUP_FUNC(char*, unlink_and_free);
-
-int access_fd(int fd, int mode);
 
 typedef enum UnlinkDeallocateFlags {
         UNLINK_REMOVEDIR = 1 << 0,
@@ -128,7 +127,7 @@ int openat_report_new(int dirfd, const char *pathname, int flags, mode_t mode, b
 
 int xopenat_full(int dir_fd, const char *path, int open_flags, XOpenFlags xopen_flags, mode_t mode);
 static inline int xopenat(int dir_fd, const char *path, int open_flags) {
-        return xopenat_full(dir_fd, path, open_flags, 0, 0);
+        return xopenat_full(dir_fd, path, open_flags, 0, MODE_INVALID);
 }
 
 int xopenat_lock_full(int dir_fd, const char *path, int open_flags, XOpenFlags xopen_flags, mode_t mode, LockType locktype, int operation);

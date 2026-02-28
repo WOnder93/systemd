@@ -2,6 +2,10 @@
 
 #include <sys/stat.h>
 
+#if HAVE_VMLINUX_H
+#include "bpf/userns-restrict/userns-restrict-skel.h"
+#endif
+
 #include "bpf-dlopen.h"
 #include "bpf-link.h"
 #include "fd-util.h"
@@ -22,7 +26,7 @@
 
 struct userns_restrict_bpf *userns_restrict_bpf_free(struct userns_restrict_bpf *obj) {
 #if HAVE_VMLINUX_H
-        (void) userns_restrict_bpf__destroy(obj); /* this call is fine with NULL */
+        userns_restrict_bpf__destroy(obj); /* this call is fine with NULL */
 #endif
         return NULL;
 
@@ -106,6 +110,10 @@ int userns_restrict_install(
         r = sym_bpf_map__set_max_entries(obj->maps.userns_ringbuf, USERNS_MAX * sizeof(unsigned));
         if (r < 0)
                 return log_error_errno(r, "Failed to size userns ring buffer: %m");
+
+        r = sym_bpf_map__set_max_entries(obj->maps.userns_setgroups_deny, USERNS_MAX);
+        if (r < 0)
+                return log_error_errno(r, "Failed to size userns setgroups deny hash table: %m");
 
         /* Dummy map to satisfy the verifier */
         dummy_mnt_id_hash_fd = make_inner_hash_map();
@@ -313,31 +321,98 @@ int userns_restrict_put_by_fd(
 #endif
 }
 
-int userns_restrict_reset_by_inode(
-                struct userns_restrict_bpf *obj,
-                uint64_t ino) {
+int userns_restrict_reset_by_inode(struct userns_restrict_bpf *obj, uint64_t userns_inode) {
 
 #if HAVE_VMLINUX_H
-        int r, outer_map_fd;
+        int r, outer_map_fd, setgroups_deny_fd;
         unsigned u;
 
         assert(obj);
-        assert(ino != 0);
+        assert(userns_inode != 0);
 
-        if (ino > UINT32_MAX) /* inodes larger than 32bit are definitely not included in our map, exit early */
+        if (userns_inode > UINT32_MAX) /* inodes larger than 32bit are definitely not included in our map, exit early */
                 return 0;
 
         outer_map_fd = sym_bpf_map__fd(obj->maps.userns_mnt_id_hash);
         if (outer_map_fd < 0)
                 return log_debug_errno(outer_map_fd, "Failed to get outer BPF map fd: %m");
 
-        u = (uint32_t) ino;
+        u = (uint32_t) userns_inode;
 
         r = sym_bpf_map_delete_elem(outer_map_fd, &u);
         if (r < 0)
-                return log_debug_errno(r, "Failed to remove entry for inode %" PRIu64 " from outer map: %m", ino);
+                return log_debug_errno(r, "Failed to remove entry for inode %" PRIu64 " from outer map: %m", userns_inode);
+
+        setgroups_deny_fd = sym_bpf_map__fd(obj->maps.userns_setgroups_deny);
+        if (setgroups_deny_fd < 0)
+                return log_debug_errno(setgroups_deny_fd, "Failed to get setgroups deny BPF map fd: %m");
+
+        r = sym_bpf_map_delete_elem(setgroups_deny_fd, &u);
+        if (r < 0 && r != -ENOENT)
+                return log_debug_errno(r, "Failed to remove entry for inode %" PRIu64 " from setgroups deny map: %m", userns_inode);
 
         return 0;
+#else
+        return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP), "User Namespace Restriction BPF support disabled.");
+#endif
+}
+
+int userns_restrict_setgroups_deny_by_inode(
+                struct userns_restrict_bpf *obj,
+                uint64_t userns_inode) {
+
+#if HAVE_VMLINUX_H
+        int map_fd, r;
+        uint32_t dummy = 1;
+        unsigned ino;
+
+        assert(obj);
+        assert(userns_inode != 0);
+
+        /* The BPF map only supports 32bit keys, and user namespace inode numbers are 32bit too, even though
+         * ino_t is 64bit these days. Should we ever run into a 64bit inode let's refuse early. */
+        if (userns_inode > UINT32_MAX)
+                return -EINVAL;
+
+        ino = (unsigned) userns_inode;
+
+        map_fd = sym_bpf_map__fd(obj->maps.userns_setgroups_deny);
+        if (map_fd < 0)
+                return log_debug_errno(map_fd, "Failed to get setgroups deny BPF map fd: %m");
+
+        r = sym_bpf_map_update_elem(map_fd, &ino, &dummy, BPF_ANY);
+        if (r < 0)
+                return log_debug_errno(r, "Failed to add userns inode to setgroups deny map: %m");
+
+        log_debug("Denying setgroups() on userns inode %" PRIu64, userns_inode);
+
+        return 0;
+#else
+        return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP), "User Namespace Restriction BPF support disabled.");
+#endif
+}
+
+int userns_restrict_setgroups_deny_by_fd(
+                struct userns_restrict_bpf *obj,
+                int userns_fd) {
+
+#if HAVE_VMLINUX_H
+        struct stat st;
+        int r;
+
+        assert(obj);
+        assert(userns_fd >= 0);
+
+        r = fd_is_namespace(userns_fd, NAMESPACE_USER);
+        if (r < 0)
+                return log_debug_errno(r, "Failed to determine if file descriptor is user namespace: %m");
+        if (r == 0)
+                return log_debug_errno(SYNTHETIC_ERRNO(EBADF), "User namespace fd is not actually a user namespace fd.");
+
+        if (fstat(userns_fd, &st) < 0)
+                return log_debug_errno(errno, "Failed to fstat() user namespace: %m");
+
+        return userns_restrict_setgroups_deny_by_inode(obj, st.st_ino);
 #else
         return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP), "User Namespace Restriction BPF support disabled.");
 #endif

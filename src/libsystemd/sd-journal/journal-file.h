@@ -5,7 +5,7 @@
 #include <sys/stat.h>
 
 #include "compress.h"
-#include "forward.h"
+#include "sd-forward.h"
 #include "gcrypt-util.h"
 #include "journal-def.h"
 #include "mmap-cache.h"
@@ -150,7 +150,7 @@ int journal_file_open(
                 JournalFile **ret);
 
 int journal_file_set_offline_thread_join(JournalFile *f);
-JournalFile* journal_file_close(JournalFile *j);
+JournalFile* journal_file_close(JournalFile *f);
 int journal_file_fstat(JournalFile *f);
 DEFINE_TRIVIAL_CLEANUP_FUNC(JournalFile*, journal_file_close);
 
@@ -335,7 +335,7 @@ uint64_t journal_file_hash_data(JournalFile *f, const void *data, size_t sz);
 
 bool journal_field_valid(const char *p, size_t l, bool allow_protected);
 
-const char* journal_object_type_to_string(ObjectType type) _const_;
+DECLARE_STRING_TABLE_LOOKUP_TO_STRING(journal_object_type, ObjectType);
 
 static inline Compression COMPRESSION_FROM_OBJECT(const Object *o) {
         assert(o);

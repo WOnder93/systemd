@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #pragma once
 
-#include "forward.h"
+#include "basic-forward.h"
 #include "stat-util.h"
 
 #define FILESYSTEM_MAGIC_MAX 10
@@ -38,4 +38,4 @@ int fs_type_from_string(const char *name, const statfs_f_type_t **ret);
 bool fs_in_group(const struct statfs *s, enum FilesystemGroups fs_group);
 
 /* gperf prototypes */
-const struct FilesystemMagic* filesystems_gperf_lookup(const char *key, GPERF_LEN_TYPE length);
+const struct FilesystemMagic* filesystems_gperf_lookup(const char *str, GPERF_LEN_TYPE length);

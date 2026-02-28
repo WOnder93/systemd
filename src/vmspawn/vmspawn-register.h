@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
+#pragma once
 
-#include "forward.h"
+#include "shared-forward.h"
 
 int register_machine(
                 sd_bus *bus,
@@ -12,6 +13,7 @@ int register_machine(
                 unsigned cid,
                 const char *address,
                 const char *key_path,
-                bool keep_unit);
+                bool allocate_unit,
+                RuntimeScope scope);
 
 int unregister_machine(sd_bus *bus, const char *machine_name);

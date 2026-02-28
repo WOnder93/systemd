@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #pragma once
 
-#include "forward.h"
+#include "basic-forward.h"
 
 typedef enum ChaseFlags {
         CHASE_PREFIX_ROOT        = 1 << 0,  /* The specified path will be prefixed by the specified root before beginning the iteration */
@@ -29,6 +29,7 @@ typedef enum ChaseFlags {
         CHASE_EXTRACT_FILENAME   = 1 << 13, /* Only return the last component of the resolved path */
         CHASE_MUST_BE_DIRECTORY  = 1 << 14, /* Fail if returned inode fd is not a dir */
         CHASE_MUST_BE_REGULAR    = 1 << 15, /* Fail if returned inode fd is not a regular file */
+        CHASE_MUST_BE_SOCKET     = 1 << 16, /* Fail if returned inode fd is not a socket */
 } ChaseFlags;
 
 bool unsafe_transition(const struct stat *a, const struct stat *b);

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #pragma once
 
-#include "forward.h"
+#include "basic-forward.h"
 
 typedef enum ConfidentialVirtualization {
         CONFIDENTIAL_VIRTUALIZATION_NONE = 0,
@@ -20,5 +20,4 @@ typedef enum ConfidentialVirtualization {
 
 ConfidentialVirtualization detect_confidential_virtualization(void);
 
-const char* confidential_virtualization_to_string(ConfidentialVirtualization v) _const_;
-ConfidentialVirtualization confidential_virtualization_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(confidential_virtualization, ConfidentialVirtualization);

@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "dirent-util.h"
 #include "env-util.h"
@@ -54,6 +55,16 @@ static char* normalize_locale(const char *name) {
         return strdup(name);
 }
 
+static const char* get_locale_dir(void) {
+        return secure_getenv("SYSTEMD_LOCALE_DIRECTORY") ?:
+#ifdef __GLIBC__
+                "/usr/lib/locale/";
+#else
+                "/usr/share/i18n/locales/musl/";
+#endif
+}
+
+#ifdef __GLIBC__
 static int add_locales_from_archive(Set *locales) {
         /* Stolen from glibc... */
 
@@ -92,7 +103,11 @@ static int add_locales_from_archive(Set *locales) {
 
         assert(locales);
 
-        _cleanup_close_ int fd = open("/usr/lib/locale/locale-archive", O_RDONLY|O_NOCTTY|O_CLOEXEC);
+        _cleanup_free_ char *locale_archive_file = path_join(get_locale_dir(), "locale-archive");
+        if (!locale_archive_file)
+                return -ENOMEM;
+
+        _cleanup_close_ int fd = open(locale_archive_file, O_RDONLY|O_NOCTTY|O_CLOEXEC);
         if (fd < 0)
                 return errno == ENOENT ? 0 : -errno;
 
@@ -149,7 +164,7 @@ static int add_locales_from_archive(Set *locales) {
 
 finish:
         if (p != MAP_FAILED)
-                munmap((void*) p, st.st_size);
+                munmap(p, st.st_size);
 
         return r;
 }
@@ -160,7 +175,7 @@ static int add_locales_from_libdir(Set *locales) {
 
         assert(locales);
 
-        dir = opendir("/usr/lib/locale");
+        dir = opendir(get_locale_dir());
         if (!dir)
                 return errno == ENOENT ? 0 : -errno;
 
@@ -182,6 +197,34 @@ static int add_locales_from_libdir(Set *locales) {
         return 0;
 }
 
+#else
+
+static int add_locales_for_musl(Set *locales) {
+        int r;
+
+        assert(locales);
+
+        _cleanup_closedir_ DIR *dir = opendir(get_locale_dir());
+        if (!dir)
+                return errno == ENOENT ? 0 : -errno;
+
+        FOREACH_DIRENT(de, dir, return -errno) {
+                if (de->d_type != DT_REG)
+                        continue;
+
+                char *z = normalize_locale(de->d_name);
+                if (!z)
+                        return -ENOMEM;
+
+                r = set_consume(locales, z);
+                if (r < 0)
+                        return r;
+        }
+
+        return 0;
+}
+#endif
+
 int get_locales(char ***ret) {
         _cleanup_set_free_ Set *locales = NULL;
         int r;
@@ -190,6 +233,7 @@ int get_locales(char ***ret) {
         if (!locales)
                 return -ENOMEM;
 
+#ifdef __GLIBC__
         r = add_locales_from_archive(locales);
         if (r < 0 && r != -ENOENT)
                 return r;
@@ -197,6 +241,11 @@ int get_locales(char ***ret) {
         r = add_locales_from_libdir(locales);
         if (r < 0)
                 return r;
+#else
+        r = add_locales_for_musl(locales);
+        if (r < 0)
+                return r;
+#endif
 
         char *locale;
         SET_FOREACH(locale, locales) {
@@ -264,11 +313,25 @@ int locale_is_installed(const char *name) {
         if (STR_IN_SET(name, "C", "POSIX")) /* These ones are always OK */
                 return true;
 
+#ifdef __GLIBC__
         _cleanup_(freelocalep) locale_t loc = newlocale(LC_ALL_MASK, name, (locale_t) 0);
         if (loc == (locale_t) 0)
                 return errno == ENOMEM ? -ENOMEM : false;
 
         return true;
+#else
+        /* musl also has C.UTF-8 as builtin */
+        if (streq(name, "C.UTF-8"))
+                return true;
+
+        /* musl's newlocale() always succeeds and provides a fake locale object even when the locale does
+         * not exist. Hence, we need to explicitly check if the locale file exists. */
+        _cleanup_free_ char *p = path_join(get_locale_dir(), name);
+        if (!p)
+                return -ENOMEM;
+
+        return access(p, F_OK) >= 0;
+#endif
 }
 
 static bool is_locale_utf8_impl(void) {

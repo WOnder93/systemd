@@ -44,11 +44,41 @@
     <citerefentry><refentrytitle>sd-json</refentrytitle><manvolnum>3</manvolnum></citerefentry> API for JSON
     serialization, deserialization and manipulation.</para>
 
+    <para>Canonical encoding rules: sd-varlink omits the <literal>"parameters"</literal> member on the wire in replies,
+    errors, and notifications when there are no parameters to transmit. This reduces message size and
+    avoids ambiguity. Receivers must be tolerant and accept any of the following encodings for the
+    absence of parameters: an omitted <literal>"parameters"</literal> key (preferred), a JSON <literal>null</literal>
+    value, or an empty object <literal>{}</literal>. When decoding, sd-varlink treats JSON <literal>null</literal>
+    as if the member was omitted.</para>
+
     <para>The <citerefentry><refentrytitle>varlinkctl</refentrytitle><manvolnum>1</manvolnum></citerefentry> tool
     makes the functionality implemented by sd-varlink available from the command line.</para>
   </refsect1>
 
   <xi:include href="libsystemd-pkgconfig.xml" />
+
+  <refsect1>
+    <title>Directories</title>
+
+    <variablelist>
+      <varlistentry>
+        <term><filename>/usr/lib/systemd/varlink-bridges/</filename></term>
+        <listitem>
+          <para>When <function>sd_varlink_connect_url()</function> encounters a URL with a scheme that is not
+            natively supported, it looks for a bridge helper binary named after the URL scheme in this
+            directory. The binary is invoked the same way as <literal>exec:</literal> binaries but with the full
+            URL passed as the first command line argument.</para>
+
+          <para>For example, if
+            <command>varlinkctl introspect https://example.com/ws/sockets/io.systemd.Hostname</command>
+            is called, <command>varlinkctl</command> will look for an executable
+            <filename>/usr/lib/systemd/varlink-bridges/https</filename> and invoke it with
+            <literal>https://example.com/ws/sockets/io.systemd.Hostname</literal> as its only
+            argument.</para>
+        </listitem>
+      </varlistentry>
+    </variablelist>
+  </refsect1>
 
   <refsect1>
     <title>See Also</title>

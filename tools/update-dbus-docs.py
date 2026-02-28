@@ -19,11 +19,6 @@ try:
 except ImportError as e:
     shlex_join = e
 
-try:
-    from shlex import quote as shlex_quote
-except ImportError as e:
-    shlex_quote = e
-
 class NoCommand(Exception):
     pass
 
@@ -214,10 +209,7 @@ def subst_output(document, programlisting, stats, missing_version):
     interface = programlisting.get('interface')
 
     argv = [f'{arguments.build_dir}/{executable}', f'--bus-introspect={interface}']
-    if isinstance(shlex_join, Exception):
-        print(f'COMMAND: {" ".join(shlex_quote(arg) for arg in argv)}')
-    else:
-        print(f'COMMAND: {shlex_join(argv)}')
+    print(f'COMMAND: {shlex_join(argv)}')
 
     try:
         out = subprocess.check_output(argv, universal_newlines=True)
@@ -326,13 +318,13 @@ def main():
     global arguments
     arguments = parse_args()
 
-    for item in (etree, shlex_quote):
+    for item in (etree, shlex_join):
         if isinstance(item, Exception):
             print(item, file=sys.stderr)
             sys.exit(77 if arguments.test else 1)
 
-    if not os.path.exists(f'{arguments.build_dir}/systemd'):
-        sys.exit(f"{arguments.build_dir}/systemd doesn't exist. Use --build-dir=.")
+    if not os.path.exists(f'{arguments.build_dir}'):
+        sys.exit(f"{arguments.build_dir} doesn't exist.")
 
     missing_version = []
     stats = {page.split('/')[-1] : process(page, missing_version) for page in arguments.pages}
@@ -348,7 +340,7 @@ def main():
 
     # Let's print all statistics at the end
     mlen = max(len(page) for page in stats)
-    total = sum((item['stats'] for item in stats.values()), collections.Counter())
+    total = sum((item['stats'] for item in stats.values()), start=collections.Counter())
     total = 'total', { "stats" : total, "modified" : False }
     modified = []
     classification = 'OUTDATED' if arguments.test else 'MODIFIED'

@@ -4,6 +4,7 @@
 #include <locale.h>
 
 #include "sd-journal.h"
+#include "sd-varlink.h"
 
 #include "build.h"
 #include "dissect-image.h"
@@ -17,6 +18,7 @@
 #include "journalctl-misc.h"
 #include "journalctl-show.h"
 #include "journalctl-varlink.h"
+#include "journalctl-varlink-server.h"
 #include "log.h"
 #include "loop-util.h"
 #include "main-func.h"
@@ -28,6 +30,7 @@
 #include "parse-util.h"
 #include "pcre2-util.h"
 #include "pretty-print.h"
+#include "runtime-scope.h"
 #include "set.h"
 #include "static-destruct.h"
 #include "string-table.h"
@@ -35,6 +38,8 @@
 #include "strv.h"
 #include "syslog-util.h"
 #include "time-util.h"
+#include "varlink-io.systemd.JournalAccess.h"
+#include "varlink-util.h"
 
 #define DEFAULT_FSS_INTERVAL_USEC (15*USEC_PER_MINUTE)
 
@@ -108,6 +113,9 @@ PatternCompileCase arg_case = PATTERN_COMPILE_CASE_AUTO;
 ImagePolicy *arg_image_policy = NULL;
 bool arg_synchronize_on_exit = false;
 
+static bool arg_varlink = false;
+RuntimeScope arg_varlink_runtime_scope = _RUNTIME_SCOPE_INVALID;
+
 STATIC_DESTRUCTOR_REGISTER(arg_cursor, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_cursor_file, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_after_cursor, freep);
@@ -126,7 +134,7 @@ STATIC_DESTRUCTOR_REGISTER(arg_machine, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_namespace, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_output_fields, set_freep);
 STATIC_DESTRUCTOR_REGISTER(arg_pattern, freep);
-STATIC_DESTRUCTOR_REGISTER(arg_compiled_pattern, pattern_freep);
+STATIC_DESTRUCTOR_REGISTER(arg_compiled_pattern, pcre2_code_freep);
 STATIC_DESTRUCTOR_REGISTER(arg_image_policy, image_policy_freep);
 
 static int parse_id_descriptor(const char *x, sd_id128_t *ret_id, int *ret_offset) {
@@ -274,7 +282,7 @@ static int help(void) {
                "     --show-cursor           Print the cursor after all the entries\n"
                "     --utc                   Express time in Coordinated Universal Time (UTC)\n"
                "  -x --catalog               Add message explanations where available\n"
-               "     --no-hostname           Suppress output of hostname field\n"
+               "  -W --no-hostname           Suppress output of hostname field\n"
                "     --no-full               Ellipsize fields\n"
                "  -a --all                   Show all fields, including long and unprintable\n"
                "  -f --follow                Follow the journal\n"
@@ -324,6 +332,29 @@ static int help(void) {
         return 0;
 }
 
+static int vl_server(void) {
+        _cleanup_(sd_varlink_server_unrefp) sd_varlink_server *varlink_server = NULL;
+        int r;
+
+        r = varlink_server_new(&varlink_server, /* flags= */ 0, /* userdata= */ NULL);
+        if (r < 0)
+                return log_error_errno(r, "Failed to allocate Varlink server: %m");
+
+        r = sd_varlink_server_add_interface(varlink_server, &vl_interface_io_systemd_JournalAccess);
+        if (r < 0)
+                return log_error_errno(r, "Failed to add Varlink interface: %m");
+
+        r = sd_varlink_server_bind_method(varlink_server, "io.systemd.JournalAccess.GetEntries", vl_method_get_entries);
+        if (r < 0)
+                return log_error_errno(r, "Failed to bind Varlink method: %m");
+
+        r = sd_varlink_server_loop_auto(varlink_server);
+        if (r < 0)
+                return log_error_errno(r, "Failed to run Varlink event loop: %m");
+
+        return 0;
+}
+
 static int parse_argv(int argc, char *argv[]) {
 
         enum {
@@ -367,7 +398,6 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_VACUUM_SIZE,
                 ARG_VACUUM_FILES,
                 ARG_VACUUM_TIME,
-                ARG_NO_HOSTNAME,
                 ARG_OUTPUT_FIELDS,
                 ARG_NAMESPACE,
                 ARG_LIST_NAMESPACES,
@@ -441,7 +471,7 @@ static int parse_argv(int argc, char *argv[]) {
                 { "vacuum-size",          required_argument, NULL, ARG_VACUUM_SIZE          },
                 { "vacuum-files",         required_argument, NULL, ARG_VACUUM_FILES         },
                 { "vacuum-time",          required_argument, NULL, ARG_VACUUM_TIME          },
-                { "no-hostname",          no_argument,       NULL, ARG_NO_HOSTNAME          },
+                { "no-hostname",          no_argument,       NULL, 'W'                      },
                 { "output-fields",        required_argument, NULL, ARG_OUTPUT_FIELDS        },
                 { "namespace",            required_argument, NULL, ARG_NAMESPACE            },
                 { "list-namespaces",      no_argument,       NULL, ARG_LIST_NAMESPACES      },
@@ -454,7 +484,44 @@ static int parse_argv(int argc, char *argv[]) {
         assert(argc >= 0);
         assert(argv);
 
-        while ((c = getopt_long(argc, argv, "hefo:aln::qmb::kD:p:g:c:S:U:t:T:u:INF:xrM:i:", options, NULL)) >= 0)
+        r = sd_varlink_invocation(SD_VARLINK_ALLOW_ACCEPT);
+        if (r < 0)
+                return log_error_errno(r, "Failed to check if invoked in Varlink mode: %m");
+        if (r > 0) {
+                arg_varlink = true;
+
+                static const struct option varlink_options[] = {
+                        { "system", no_argument, NULL, ARG_SYSTEM },
+                        { "user",   no_argument, NULL, ARG_USER   },
+                        {}
+                };
+
+                while ((c = getopt_long(argc, argv, "", varlink_options, NULL)) >= 0)
+
+                        switch (c) {
+
+                        case ARG_SYSTEM:
+                                arg_varlink_runtime_scope = RUNTIME_SCOPE_SYSTEM;
+                                break;
+
+                        case ARG_USER:
+                                arg_varlink_runtime_scope = RUNTIME_SCOPE_USER;
+                                break;
+
+                        case '?':
+                                return -EINVAL;
+
+                        default:
+                                assert_not_reached();
+                        }
+
+                if (arg_varlink_runtime_scope < 0)
+                        return log_error_errno(arg_varlink_runtime_scope, "Cannot run in Varlink mode with no runtime scope specified.");
+
+                return 1;
+        }
+
+        while ((c = getopt_long(argc, argv, "hefo:aln::qmb::kD:p:g:c:S:U:t:T:u:INF:xrM:i:W", options, NULL)) >= 0)
 
                 switch (c) {
 
@@ -477,10 +544,8 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case 'o':
-                        if (streq(optarg, "help")) {
-                                DUMP_STRING_TABLE(output_mode, OutputMode, _OUTPUT_MODE_MAX);
-                                return 0;
-                        }
+                        if (streq(optarg, "help"))
+                                return DUMP_STRING_TABLE(output_mode, OutputMode, _OUTPUT_MODE_MAX);
 
                         arg_output = output_mode_from_string(optarg);
                         if (arg_output < 0)
@@ -907,7 +972,7 @@ static int parse_argv(int argc, char *argv[]) {
                         arg_action = ACTION_LIST_FIELD_NAMES;
                         break;
 
-                case ARG_NO_HOSTNAME:
+                case 'W':
                         arg_no_hostname = true;
                         break;
 
@@ -1096,6 +1161,9 @@ static int run(int argc, char *argv[]) {
         r = parse_argv(argc, argv);
         if (r <= 0)
                 return r;
+
+        if (arg_varlink)
+                return vl_server();
 
         r = strv_copy_unless_empty(strv_skip(argv, optind), &args);
         if (r < 0)

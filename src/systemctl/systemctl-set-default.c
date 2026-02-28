@@ -58,7 +58,7 @@ static void emit_cmdline_warning(void) {
 static int determine_default(char **ret_name) {
         int r;
 
-        if (install_client_side()) {
+        if (install_client_side() != INSTALL_CLIENT_SIDE_NO) {
                 r = unit_file_get_default(arg_runtime_scope, arg_root, ret_name);
                 if (r == -ERFKILL)
                         return log_error_errno(r, "Failed to get default target: Unit file is masked.");
@@ -116,14 +116,14 @@ int verb_set_default(int argc, char *argv[], void *userdata) {
         if (r < 0)
                 return log_error_errno(r, "Failed to mangle unit name: %m");
 
-        if (install_client_side()) {
+        if (install_client_side() != INSTALL_CLIENT_SIDE_NO) {
                 InstallChange *changes = NULL;
                 size_t n_changes = 0;
 
                 CLEANUP_ARRAY(changes, n_changes, install_changes_free);
 
                 r = unit_file_set_default(arg_runtime_scope, UNIT_FILE_FORCE, arg_root, unit, &changes, &n_changes);
-                install_changes_dump(r, "set default", changes, n_changes, arg_quiet);
+                r = install_changes_dump(r, "set default", changes, n_changes, arg_quiet);
                 if (r < 0)
                         return r;
         } else {

@@ -22,6 +22,8 @@ static const char* const path_table[_SD_PATH_MAX] = {
         [SD_PATH_TEMPORARY]                                   = "temporary",
         [SD_PATH_TEMPORARY_LARGE]                             = "temporary-large",
 
+        [SD_PATH_SYSTEM_SEARCH_CONFIGURATION]                 = "system-search-configuration",
+
         [SD_PATH_SYSTEM_BINARIES]                             = "system-binaries",
         [SD_PATH_SYSTEM_INCLUDE]                              = "system-include",
         [SD_PATH_SYSTEM_LIBRARY_PRIVATE]                      = "system-library-private",
@@ -248,13 +250,11 @@ static int run(int argc, char* argv[]) {
         if (r <= 0)
                 return r;
 
-        if (argc > optind) {
-                r = 0;
-                for (int i = optind; i < argc; i++)
-                        RET_GATHER(r, print_path(argv[i]));
-        } else
-                r = list_paths();
+        if (optind >= argc)
+                return list_paths();
 
+        for (int i = optind; i < argc; i++)
+                RET_GATHER(r, print_path(argv[i]));
         return r;
 }
 

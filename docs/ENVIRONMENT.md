@@ -123,8 +123,12 @@ All tools:
 * `$SYSTEMD_NETLINK_DEFAULT_TIMEOUT` — specifies the default timeout of waiting
   replies for netlink messages from the kernel. Defaults to 25 seconds.
 
-* `$SYSTEMD_VERITY_SHARING=0` — if set, sharing dm-verity devices by
-  using a stable `<ROOTHASH>-verity` device mapper name will be disabled.
+* `$SYSTEMD_VERITY_SHARING=` — takes a boolean. If set, overrides whether
+  dm-verity devices shall be shared between multiple components by using a
+  stable `<ROOTHASH>-verity` device mapper name. The default for this depends
+  on the subsystem in question. Usually,
+  RootImage=/ExtensionImages=/MountImages= in unit files default to enabled,
+  while other uses default to disabled for this.
 
 `systemctl`:
 
@@ -133,8 +137,6 @@ All tools:
 
 * `$SYSTEMCTL_INSTALL_CLIENT_SIDE=1` — if set, enable or disable unit files on
   the client side, instead of asking PID 1 to do this.
-
-* `$SYSTEMCTL_SKIP_SYSV=1` — if set, do not call SysV compatibility hooks.
 
 * `$SYSTEMCTL_SKIP_AUTO_KEXEC=1` — if set, do not automatically kexec instead of
   reboot when a new kernel has been loaded.
@@ -230,7 +232,7 @@ All tools:
   file may be checked for by services run during system shutdown in order to
   request the appropriate operation from the boot loader in an alternative
   fashion. Note that by default only boot loader entries which follow the
-  [Boot Loader Specification](https://uapi-group.org/specifications/specs/boot_loader_specification)
+  [UAPI.1 Boot Loader Specification](https://uapi-group.org/specifications/specs/boot_loader_specification)
   and are placed in the ESP or the Extended Boot Loader partition may be
   selected this way. However, if a directory `/run/boot-loader-entries/`
   exists, the entries are loaded from there instead. The directory should
@@ -286,6 +288,9 @@ All tools:
 * `$SYSTEMD_NSS_DYNAMIC_BYPASS=1` — if set, `nss-systemd` won't return
   user/group records for dynamically registered service users (i.e. users
   registered through `DynamicUser=1`).
+
+* `$SYSTEMD_NSS_LOG_LEVEL=<level>` — If set, sets the log level for `nss-systemd`
+  and other NSS plugins specifically. Takes priority over `$SYSTEMD_LOG_LEVEL`.
 
 `systemd-timedated`:
 
@@ -377,8 +382,15 @@ All tools:
 
 * `$SYSTEMD_KEYMAP_DIRECTORIES=` — takes a colon (`:`) separated list of keymap
   directories. The directories must be absolute and normalized. If unset, the
-  default keymap directories (/usr/share/keymaps/, /usr/share/kbd/keymaps/, and
-  /usr/lib/kbd/keymaps/) will be used.
+  default keymap directories (`/usr/share/keymaps/`, `/usr/share/kbd/keymaps/`,
+  and `/usr/lib/kbd/keymaps/`) will be used.
+
+* `$SYSTEMD_XKB_DIRECTORY=` — The directory must be absolute and normalized. If
+  unset, the default XKB directory (`/usr/share/X11/xkb/`) will be used.
+
+* `$SYSTEMD_LOCALE_DIRECTORY=` — The directory must be absolute and normalized.
+  If unset, the default locale directory of the C library (`/usr/lib/locale/`
+  for glibc and `/usr/share/i18n/locales/musl/` for musl) will be used.
 
 `systemd-resolved`:
 
@@ -405,6 +417,14 @@ All tools:
   command line still overrides the effect of the environment
   variable. Similarly, `$SYSTEMD_CONFEXT_MUTABLE_MODE` works for confext images
   and supports the systemd-confext multi-call functionality of sysext.
+
+* `$SYSTEMD_SYSEXT_OVERLAYFS_MOUNT_OPTIONS` — this variable may be used to
+  override the overlayfs mount options applied for hierarchies managed by
+  `systemd-sysext`. Similarly, `$SYSTEMD_CONFEXT_OVERLAYFS_MOUNT_OPTIONS` works
+  for confext images and supports the systemd-confext multi-call functionality
+  of sysext. Read-only hierarchies have no mount options added by
+  default. Mutable hierarchies have the following mount options added by
+  default: `redirect_dir=on,noatime,metacopy=off,index=off`.
 
 `systemd-tmpfiles`:
 
@@ -433,14 +453,6 @@ All tools:
   skipped. This can be useful if `systemd-sysusers` is invoked unconditionally
   as a child process by another tool, such as package managers running it in a
   postinstall script.
-
-`systemd-sysv-generator`:
-
-* `$SYSTEMD_SYSVINIT_PATH` — Controls where `systemd-sysv-generator` looks for
-  SysV init scripts.
-
-* `$SYSTEMD_SYSVRCND_PATH` — Controls where `systemd-sysv-generator` looks for
-  SysV init script runlevel link farms.
 
 systemd tests:
 
@@ -503,7 +515,7 @@ disk images with `--image=` or similar:
   to load the embedded Verity signature data. If enabled (which is the
   default), Verity root hash information and a suitable signature is
   automatically acquired from a signature partition, following the
-  [Discoverable Partitions Specification](https://uapi-group.org/specifications/specs/discoverable_partitions_specification).
+  [UAPI.2 Discoverable Partitions Specification](https://uapi-group.org/specifications/specs/discoverable_partitions_specification).
   If disabled any such partition is ignored. Note that this only disables
   discovery of the root hash and its signature, the Verity data partition
   itself is still searched in the GPT image.
@@ -522,6 +534,15 @@ disk images with `--image=` or similar:
   systems that may be mounted for automatically dissected disk images. If not
   specified defaults to something like: `ext4:btrfs:xfs:vfat:erofs:squashfs`
 
+* `$SYSTEMD_DISSECT_FSTYPE_<DESIGNATOR>=` – overrides the file system time to
+  use when mounting the partition of the indicated designator. The
+  `<DESIGNATOR>` string shall be one of `ROOT`, `USR`, `HOME`, `SRV`, `ESP`,
+  `XBOOTLDR`, `TMP`, `VAR` as per the [UAPI.2 Discoverable Partitions
+  Specification](https://uapi-group.org/specifications/specs/discoverable_partitions_specification/). If
+  unspecified the image dissection logic will automatically probe the file
+  system type (subject to `$SYSTEMD_DISSECT_FILE_SYSTEMS`, see above), except
+  for ESP and XBOOTLDR where the file system type is set to VFAT.
+
 * `$SYSTEMD_LOOP_DIRECT_IO` – takes a boolean, which controls whether to enable
   `LO_FLAGS_DIRECT_IO` (i.e. direct IO + asynchronous IO) on loopback block
   devices when opening them. Defaults to on, set this to "0" to disable this
@@ -536,8 +557,8 @@ disk images with `--image=` or similar:
 * `$SYSTEMD_DISSECT_VERITY_GUESS` – takes a boolean. Controls whether to guess
   the Verity root hash from the partition UUIDs of a suitable pair of data
   partition and matching Verity partition: the UUIDs two are simply joined and
-  used as root hash, in accordance with the recommendations in [Discoverable
-  Partitions
+  used as root hash, in accordance with the recommendations in [UAPI.2
+  Discoverable Partitions
   Specification](https://uapi-group.org/specifications/specs/discoverable_partitions_specification). Defaults
   to true.
 
@@ -554,8 +575,8 @@ disk images with `--image=` or similar:
   environment variable to the build directory and you are set. This variable
   is only supported when systemd is compiled in developer mode.
 
-Various tools that read passwords from the TTY, such as `systemd-cryptenroll`
-and `homectl`:
+Various tools that read passwords from the TTY, such as `systemd-cryptenroll`,
+`systemd-dissect` and `homectl`:
 
 * `$PASSWORD` — takes a string: the literal password to use. If this
   environment variable is set it is used as password instead of prompting the
@@ -654,6 +675,10 @@ SYSTEMD_HOME_DEBUG_SUFFIX=foo \
   specified algorithm takes an effect immediately, you need to explicitly run
   `journalctl --rotate`.
 
+* `$SYSTEMD_JOURNAL_FD_SIZE_MAX` – Takes a size with the usual suffixes (K, M, ...) in
+  string format. Overrides the default maximum allowed size for a file-descriptor
+  based input record to be stored in the journal.
+
 * `$SYSTEMD_CATALOG` – path to the compiled catalog database file to use for
   `journalctl -x`, `journalctl --update-catalog`, `journalctl --list-catalog`
   and related calls.
@@ -739,6 +764,9 @@ Tools using the Varlink protocol (such as `varlinkctl`) or sd-bus (such as
   would listen on. If set to "-" the tool will turn stdin/stdout into a Varlink
   connection.
 
+* `$SYSTEMD_VARLINK_BRIDGES_DIR` – overrides the default `$LIBEXEC/varlink-bridges/`
+  path when looking up custom scheme bridge helper binaries.
+
 `systemd-mountfsd`:
 
 * `$SYSTEMD_MOUNTFSD_TRUSTED_DIRECTORIES` – takes a boolean argument. If true
@@ -759,15 +787,14 @@ Tools using the Varlink protocol (such as `varlinkctl`) or sd-bus (such as
 
 `systemd-run`, `run0`, `systemd-nspawn`, `systemd-vmspawn`:
 
-* `$SYSTEMD_TINT_BACKGROUND` – Takes a boolean. When false the automatic
-  tinting of the background for containers, VMs, and interactive `systemd-run`
-  and `run0` invocations is turned off. Note that this environment variable has
-  no effect if the background color is explicitly selected via the relevant
-  `--background=` switch of the tool.
+* `$SYSTEMD_TINT_BACKGROUND` – Takes a boolean. When false the automatic and
+  explicit tinting of the background (via `--background=`) for containers, VMs,
+  `systemd-pty-forward` and interactive  `systemd-run` and `run0` invocations is
+  turned off.
 
 * `$SYSTEMD_ADJUST_TERMINAL_TITLE` – Takes a boolean. When false the terminal
-  window title will not be updated for interactive invocation of the mentioned
-  tools.
+  window title will not be updated for interactive invocation of the tools
+  mentioned above.
 
 `systemd-hostnamed`, `systemd-importd`, `systemd-localed`, `systemd-machined`,
 `systemd-portabled`, `systemd-timedated`:
@@ -816,3 +843,17 @@ Tools using the Varlink protocol (such as `varlinkctl`) or sd-bus (such as
 
 * `$SYSTEMD_ETC_VCONSOLE_CONF` - override the path to the virtual console
   configuration file. The default is `/etc/vconsole.conf`.
+
+`systemd-modules-load`:
+
+* `$SYSTEMD_MODULES_LOAD_NUM_THREADS` - takes a number, which controls the
+  overall number of threads used to load modules by `systemd-modules-load`.
+  If unset, the default number of threads is equal to the number of online CPUs,
+  with a maximum of 16. If set to `0`, multi-threaded loading is disabled.
+
+`systemd-sysupdate`:
+
+* `$SYSTEMD_SYSUPDATE_VERIFY_FRESHNESS` – takes a boolean. If false the
+  'freshness' check via `BEST-BEFORE-YYYY-MM-DD` files in `SHA256SUMS` manifest
+  files is disabled, and updating from outdated manifests will not result in an
+  error.

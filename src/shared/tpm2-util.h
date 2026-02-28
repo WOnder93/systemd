@@ -2,8 +2,8 @@
 #pragma once
 
 #include "bitfield.h"
-#include "forward.h"
 #include "openssl-util.h"
+#include "shared-forward.h"
 
 typedef enum TPM2Flags {
         TPM2_FLAGS_USE_PIN     = 1 << 0,
@@ -39,13 +39,13 @@ static inline bool TPM2_PCR_MASK_VALID(uint32_t pcr_mask) {
 
 #define TPM2_N_HASH_ALGORITHMS 4U
 
+int dlopen_tpm2(void);
+
 #if HAVE_TPM2
 
 #include <tss2/tss2_esys.h>     /* IWYU pragma: export */
 #include <tss2/tss2_mu.h>       /* IWYU pragma: export */
 #include <tss2/tss2_rc.h>       /* IWYU pragma: export */
-
-int dlopen_tpm2(void);
 
 typedef struct Tpm2Context {
         unsigned n_ref;
@@ -66,8 +66,7 @@ typedef struct Tpm2Context {
 
 int tpm2_context_new(const char *device, Tpm2Context **ret_context);
 int tpm2_context_new_or_warn(const char *device, Tpm2Context **ret_context);
-Tpm2Context *tpm2_context_ref(Tpm2Context *context);
-Tpm2Context *tpm2_context_unref(Tpm2Context *context);
+DECLARE_TRIVIAL_REF_UNREF_FUNC(Tpm2Context, tpm2_context);
 DEFINE_TRIVIAL_CLEANUP_FUNC(Tpm2Context*, tpm2_context_unref);
 
 typedef struct Tpm2Handle {
@@ -142,14 +141,23 @@ typedef enum Tpm2UserspaceEventType {
         TPM2_EVENT_FILESYSTEM,
         TPM2_EVENT_VOLUME_KEY,
         TPM2_EVENT_MACHINE_ID,
+        TPM2_EVENT_PRODUCT_ID,
+        TPM2_EVENT_KEYSLOT,
+        TPM2_EVENT_NVPCR_INIT,
+        TPM2_EVENT_NVPCR_SEPARATOR,
+        TPM2_EVENT_DM_VERITY,
         _TPM2_USERSPACE_EVENT_TYPE_MAX,
         _TPM2_USERSPACE_EVENT_TYPE_INVALID = -EINVAL,
 } Tpm2UserspaceEventType;
 
-const char* tpm2_userspace_event_type_to_string(Tpm2UserspaceEventType type) _const_;
-Tpm2UserspaceEventType tpm2_userspace_event_type_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(tpm2_userspace_event_type, Tpm2UserspaceEventType);
 
-int tpm2_extend_bytes(Tpm2Context *c, char **banks, unsigned pcr_index, const void *data, size_t data_size, const void *secret, size_t secret_size, Tpm2UserspaceEventType event, const char *description);
+int tpm2_pcr_extend_bytes(Tpm2Context *c, char **banks, unsigned pcr_index, const struct iovec *data, const struct iovec *secret, Tpm2UserspaceEventType event_type, const char *description);
+int tpm2_nvpcr_get_index(const char *name, uint32_t *ret);
+int tpm2_nvpcr_extend_bytes(Tpm2Context *c, const Tpm2Handle *session, const char *name, const struct iovec *data, const struct iovec *secret, Tpm2UserspaceEventType event_type, const char *description);
+int tpm2_nvpcr_acquire_anchor_secret(struct iovec *ret, bool sync_secondary);
+int tpm2_nvpcr_initialize(Tpm2Context *c, const Tpm2Handle *session, const char *name, const struct iovec *anchor_secret);
+int tpm2_nvpcr_read(Tpm2Context *c, const Tpm2Handle *session, const char *name, struct iovec *ret, uint32_t *ret_nv_index);
 
 uint32_t tpm2_tpms_pcr_selection_to_mask(const TPMS_PCR_SELECTION *s);
 void tpm2_tpms_pcr_selection_from_mask(uint32_t mask, TPMI_ALG_HASH hash, TPMS_PCR_SELECTION *ret);
@@ -175,11 +183,11 @@ char* tpm2_tpml_pcr_selection_to_string(const TPML_PCR_SELECTION *l);
 size_t tpm2_tpml_pcr_selection_weight(const TPML_PCR_SELECTION *l);
 #define tpm2_tpml_pcr_selection_is_empty(l) (tpm2_tpml_pcr_selection_weight(l) == 0)
 
-int tpm2_digest_many(TPMI_ALG_HASH alg, TPM2B_DIGEST *digest, const struct iovec data[], size_t count, bool extend);
+int tpm2_digest_many(TPMI_ALG_HASH alg, TPM2B_DIGEST *digest, const struct iovec data[], size_t n_data, bool extend);
 static inline int tpm2_digest_buffer(TPMI_ALG_HASH alg, TPM2B_DIGEST *digest, const void *data, size_t len, bool extend) {
         return tpm2_digest_many(alg, digest, &IOVEC_MAKE((void*) data, len), 1, extend);
 }
-int tpm2_digest_many_digests(TPMI_ALG_HASH alg, TPM2B_DIGEST *digest, const TPM2B_DIGEST data[], size_t count, bool extend);
+int tpm2_digest_many_digests(TPMI_ALG_HASH alg, TPM2B_DIGEST *digest, const TPM2B_DIGEST data[], size_t n_data, bool extend);
 static inline int tpm2_digest_rehash(TPMI_ALG_HASH alg, TPM2B_DIGEST *digest) {
         return tpm2_digest_many(alg, digest, NULL, 0, true);
 }
@@ -296,7 +304,10 @@ int tpm2_tpm2b_public_to_fingerprint(const TPM2B_PUBLIC *public, void **ret_fing
 
 int tpm2_define_policy_nv_index(Tpm2Context *c, const Tpm2Handle *session, TPM2_HANDLE requested_nv_index, const TPM2B_DIGEST *write_policy, TPM2_HANDLE *ret_nv_index, Tpm2Handle **ret_nv_handle, TPM2B_NV_PUBLIC *ret_nv_public);
 int tpm2_write_policy_nv_index(Tpm2Context *c, const Tpm2Handle *policy_session, TPM2_HANDLE nv_index, const Tpm2Handle *nv_handle, const TPM2B_DIGEST *policy_digest);
-int tpm2_undefine_policy_nv_index(Tpm2Context *c, const Tpm2Handle *session, TPM2_HANDLE nv_index, const Tpm2Handle *nv_handle);
+int tpm2_define_nvpcr_nv_index(Tpm2Context *c, const Tpm2Handle *session, TPM2_HANDLE nv_index, TPMI_ALG_HASH algorithm, Tpm2Handle **ret_nv_handle);
+int tpm2_extend_nvpcr_nv_index(Tpm2Context *c, TPM2_HANDLE nv_index, const Tpm2Handle *nv_handle, const struct iovec *digest);
+int tpm2_undefine_nv_index(Tpm2Context *c, const Tpm2Handle *session, TPM2_HANDLE nv_index, const Tpm2Handle *nv_handle);
+int tpm2_read_nv_index(Tpm2Context *c, const Tpm2Handle *session, TPM2_HANDLE nv_index, const Tpm2Handle *nv_handle, struct iovec *ret_value);
 
 int tpm2_seal_data(Tpm2Context *c, const struct iovec *data, const Tpm2Handle *primary_handle, const Tpm2Handle *encryption_session, const TPM2B_DIGEST *policy, struct iovec *ret_public, struct iovec *ret_private);
 int tpm2_unseal_data(Tpm2Context *c, const struct iovec *public, const struct iovec *private, const Tpm2Handle *primary_handle, const Tpm2Handle *policy_session, const Tpm2Handle *encryption_session, struct iovec *ret_data);
@@ -489,7 +500,7 @@ int tpm2_util_pbkdf2_hmac_sha256(const void *pass,
                     size_t passlen,
                     const void *salt,
                     size_t saltlen,
-                    uint8_t res[static SHA256_DIGEST_SIZE]);
+                    uint8_t ret[static SHA256_DIGEST_SIZE]);
 
 enum {
         /* Additional defines for the PCR index naming enum from "fundamental/tpm2-pcr.h" */
@@ -497,8 +508,7 @@ enum {
         _TPM2_PCR_INDEX_INVALID     = -EINVAL,
 };
 
-int tpm2_pcr_index_from_string(const char *s) _pure_;
-const char* tpm2_pcr_index_to_string(int pcr) _const_;
+DECLARE_STRING_TABLE_LOOKUP(tpm2_pcr_index, int);
 
 /* The first and last NV index handle that is not registered to any company, as per TCG's "Registry of
  * Reserved TPM 2.0 Handles and Localities", section 2.2.2. */
@@ -510,3 +520,5 @@ const char* tpm2_pcr_index_to_string(int pcr) _const_;
 assert_cc(TPM2_NV_INDEX_UNASSIGNED_FIRST >= TPM2_NV_INDEX_FIRST);
 assert_cc(TPM2_NV_INDEX_UNASSIGNED_LAST <= TPM2_NV_INDEX_LAST);
 #endif
+
+bool tpm2_nvpcr_name_is_valid(const char *name);

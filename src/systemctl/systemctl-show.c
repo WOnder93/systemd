@@ -17,7 +17,6 @@
 #include "errno-util.h"
 #include "exec-util.h"
 #include "exit-status.h"
-#include "extract-word.h"
 #include "format-util.h"
 #include "hexdecoct.h"
 #include "hostname-setup.h"
@@ -302,10 +301,6 @@ typedef struct UnitStatusInfo {
         uint64_t ip_egress_bytes;
         uint64_t io_read_bytes;
         uint64_t io_write_bytes;
-
-        uint64_t default_memory_min;
-        uint64_t default_memory_low;
-        uint64_t default_startup_memory_low;
 
         /* Exec Quotas */
         QuotaInfo exec_directories_quota[_EXEC_DIRECTORY_TYPE_MAX];
@@ -929,7 +924,7 @@ static void print_status_info(
                         if (i->control_pid > 0)
                                 extra[k++] = i->control_pid;
 
-                        show_cgroup_and_extra(SYSTEMD_CGROUP_CONTROLLER, i->control_group, prefix, c, extra, k, get_output_flags());
+                        show_cgroup_and_extra(i->control_group, prefix, c, extra, k, get_output_flags());
                 } else if (r < 0)
                         log_warning_errno(r, "Failed to dump process list for '%s', ignoring: %s",
                                           i->id, bus_error_message(&error, r));
@@ -941,7 +936,7 @@ static void print_status_info(
                                 i->id,
                                 i->log_namespace,
                                 arg_output,
-                                /* n_columns = */ 0,
+                                /* n_columns= */ 0,
                                 i->inactive_exit_timestamp_monotonic,
                                 arg_lines,
                                 get_output_flags() | OUTPUT_BEGIN_NEWLINE,
@@ -1215,7 +1210,7 @@ static int print_property(const char *name, const char *expected_value, sd_bus_m
                 break;
 
         case SD_BUS_TYPE_UINT64:
-                if (endswith(name, "Timestamp")) {
+                if (bus_property_is_timestamp(name)) {
                         uint64_t timestamp;
 
                         r = sd_bus_message_read_basic(m, bus_type, &timestamp);
@@ -2249,9 +2244,6 @@ static int show_one(
                 { "MemorySwapPeak",                 "t",               NULL,           offsetof(UnitStatusInfo, memory_swap_peak)                  },
                 { "MemoryZSwapCurrent",             "t",               NULL,           offsetof(UnitStatusInfo, memory_zswap_current)              },
                 { "MemoryAvailable",                "t",               NULL,           offsetof(UnitStatusInfo, memory_available)                  },
-                { "DefaultMemoryMin",               "t",               NULL,           offsetof(UnitStatusInfo, default_memory_min)                },
-                { "DefaultMemoryLow",               "t",               NULL,           offsetof(UnitStatusInfo, default_memory_low)                },
-                { "DefaultStartupMemoryLow",        "t",               NULL,           offsetof(UnitStatusInfo, default_startup_memory_low)        },
                 { "MemoryMin",                      "t",               NULL,           offsetof(UnitStatusInfo, memory_min)                        },
                 { "MemoryLow",                      "t",               NULL,           offsetof(UnitStatusInfo, memory_low)                        },
                 { "StartupMemoryLow",               "t",               NULL,           offsetof(UnitStatusInfo, startup_memory_low)                },
@@ -2284,6 +2276,8 @@ static int show_one(
                 { "ExecStartPostEx",                "a(sasasttttuii)", map_exec,       0                                                           },
                 { "ExecReload",                     "a(sasbttttuii)",  map_exec,       0                                                           },
                 { "ExecReloadEx",                   "a(sasasttttuii)", map_exec,       0                                                           },
+                { "ExecReloadPost",                 "a(sasbttttuii)",  map_exec,       0                                                           },
+                { "ExecReloadPostEx",               "a(sasasttttuii)", map_exec,       0                                                           },
                 { "ExecStopPre",                    "a(sasbttttuii)",  map_exec,       0                                                           },
                 { "ExecStop",                       "a(sasbttttuii)",  map_exec,       0                                                           },
                 { "ExecStopEx",                     "a(sasasttttuii)", map_exec,       0                                                           },
@@ -2480,7 +2474,7 @@ static int show_system_status(sd_bus *bus) {
 
         r = unit_show_processes(bus, SPECIAL_ROOT_SLICE, mi.control_group, prefix, c, get_output_flags(), &error);
         if (r == -EBADR && arg_transport == BUS_TRANSPORT_LOCAL) /* Compatibility for really old systemd versions */
-                show_cgroup(SYSTEMD_CGROUP_CONTROLLER, strempty(mi.control_group), prefix, c, get_output_flags());
+                show_cgroup(strempty(mi.control_group), prefix, c, get_output_flags());
         else if (r < 0)
                 log_warning_errno(r, "Failed to dump process list for '%s', ignoring: %s",
                                   arg_host ?: hn, bus_error_message(&error, r));

@@ -159,6 +159,19 @@
           </tgroup>
         </table>
 
+        <para>If no session class is specified via either the PAM module option or via the
+        <varname>$XDG_SESSION_CLASS</varname> environment variable, the class is automatically chosen, depending on
+        various session parameters, such as the session type (if known), whether the session has a TTY or X11
+        display, and the user disposition. Note that various tools allow setting the session class for newly
+        allocated PAM sessions explicitly by means of the <varname>$XDG_SESSION_CLASS</varname> environment variable.
+        For example, classic UNIX cronjobs support environment variable assignments (see
+        <citerefentry project='man-pages'><refentrytitle>crontab</refentrytitle><manvolnum>5</manvolnum></citerefentry>),
+        which may be used to choose between the <constant>background</constant> and
+        <constant>background-light</constant> session class individually per cronjob, or
+        <command>run0 --setenv=XDG_SESSION_CLASS=user-light</command> may be used
+        to choose between <constant>user</constant> and <constant>user-light</constant> for invoked privileged sessions.
+        </para>
+
         <xi:include href="version-info.xml" xpointer="v197"/></listitem>
       </varlistentry>
 
@@ -390,6 +403,16 @@
         prefix). It is otherwise unset. For details about areas, see above.</para>
 
         <xi:include href="version-info.xml" xpointer="v258"/></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>$XDG_SESSION_EXTRA_DEVICE_ACCESS</varname></term>
+
+        <listitem><para>The set of additional hardware devices that the session shall be granted access to.
+        For every <literal><replaceable>ID</replaceable></literal> in the list, the session is granted
+        access to all devices tagged with <literal>xaccess-<replaceable>ID</replaceable></literal> in udev.</para>
+
+        <xi:include href="version-info.xml" xpointer="v260"/></listitem>
       </varlistentry>
     </variablelist>
 

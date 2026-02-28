@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #pragma once
 
-#include "forward.h"
+#include "shared-forward.h"
 
 #if defined(__x86_64__) || defined(__i386__) || defined(__arm__) || defined(__aarch64__)
 #  define ARCHITECTURE_SUPPORTS_SMBIOS 1
@@ -82,8 +82,7 @@ static const char* const network_stack_table[_NETWORK_STACK_MAX] = {
         [NETWORK_STACK_NONE] = "none",
 };
 
-const char* network_stack_to_string(NetworkStack type) _const_;
-NetworkStack network_stack_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(network_stack, NetworkStack);
 
 int qemu_check_kvm_support(void);
 int qemu_check_vsock_support(void);
@@ -91,6 +90,6 @@ int list_ovmf_config(char ***ret);
 int load_ovmf_config(const char *path, OvmfConfig **ret);
 int find_ovmf_config(int search_sb, OvmfConfig **ret);
 int find_qemu_binary(char **ret_qemu_binary);
-int vsock_fix_child_cid(int vsock_fd, unsigned *machine_cid, const char *machine);
+int vsock_fix_child_cid(int vhost_device_fd, unsigned *machine_cid, const char *machine);
 
 char* escape_qemu_value(const char *s);

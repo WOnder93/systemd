@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
 set -ex
 set -o pipefail
@@ -79,10 +79,6 @@ EOF
 cat >/run/udev/rules.d/50-testsuite.rules <<EOF
 ACTION=="add", SUBSYSTEM=="block", KERNEL=="sda", OPTIONS:="watch"
 EOF
-
-# To make the previous invocation of systemd-udevd generates debugging logs on stop,
-# that will be checked by check().
-udevadm control --log-level debug
 
 # Unfortunately, journalctl --invocation= is unstable when debug logging is enabled on service manager.
 SAVED_LOG_LEVEL=$(systemctl log-level)

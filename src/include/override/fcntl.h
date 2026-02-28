@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #pragma once
 
-#include_next <fcntl.h>
+#include_next <fcntl.h>         /* IWYU pragma: export */
 
 /* This is defined since glibc-2.41. */
 #ifndef F_DUPFD_QUERY
@@ -16,4 +16,9 @@
 /* This is defined since glibc-2.39. */
 #ifndef AT_HANDLE_FID
 #define AT_HANDLE_FID AT_REMOVEDIR
+#endif
+
+/* This is defined since glibc-2.42. */
+#ifndef AT_HANDLE_MNT_ID_UNIQUE
+#define AT_HANDLE_MNT_ID_UNIQUE 0x001  /* Return the u64 unique mount ID. */
 #endif

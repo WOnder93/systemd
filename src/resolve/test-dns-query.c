@@ -1,12 +1,14 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
+#include <stdlib.h>
+
 #include "sd-event.h"
 
-#include "resolved-dns-answer.h"
-#include "resolved-dns-packet.h"
+#include "dns-answer.h"
+#include "dns-packet.h"
+#include "dns-question.h"
+#include "dns-rr.h"
 #include "resolved-dns-query.h"
-#include "resolved-dns-question.h"
-#include "resolved-dns-rr.h"
 #include "resolved-dns-scope.h"
 #include "resolved-dns-search-domain.h"
 #include "resolved-dns-server.h"
@@ -83,7 +85,7 @@ TEST(dns_query_new_multi_question_different_domain) {
         ASSERT_NULL(query);
 }
 
-#if HAVE_LIBIDN || HAVE_LIBIDN2
+#if HAVE_LIBIDN2
 TEST(dns_query_new_same_utf8_and_idna) {
         Manager manager = {};
         _cleanup_(dns_question_unrefp) DnsQuestion *q_utf8 = NULL, *q_idna = NULL;
@@ -432,7 +434,7 @@ TEST(dns_query_process_cname_one_success_match_dname) {
         dns_resource_key_unref(key);
 }
 
-#if HAVE_LIBIDN || HAVE_LIBIDN2
+#if HAVE_LIBIDN2
 TEST(dns_query_process_cname_one_success_match_dname_utf8_same) {
         Manager manager = {};
         _cleanup_(dns_question_unrefp) DnsQuestion *q_utf8 = NULL, *q_idna = NULL;
@@ -890,4 +892,10 @@ TEST(dns_query_go) {
         exercise_dns_query_go(&cfg, NULL);
 }
 
-DEFINE_TEST_MAIN(LOG_DEBUG);
+static int intro(void) {
+        /* Disable hooks in order to make test cases hermetic */
+        ASSERT_OK_ERRNO(setenv("SYSTEMD_RESOLVED_HOOK", "0", /* overwrite= */ false));
+        return EXIT_SUCCESS;
+}
+
+DEFINE_TEST_MAIN_WITH_INTRO(LOG_DEBUG, intro);

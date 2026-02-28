@@ -1,14 +1,17 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 bootctl_sources = files(
+        'bootctl.c',
         'bootctl-install.c',
         'bootctl-random-seed.c',
         'bootctl-reboot-to-firmware.c',
         'bootctl-set-efivar.c',
         'bootctl-status.c',
         'bootctl-uki.c',
+        'bootctl-unlink.c',
+        'bootctl-cleanup.c',
         'bootctl-util.c',
-        'bootctl.c',
+        'bootspec-util.c',
 )
 
 executables += [
@@ -20,6 +23,6 @@ executables += [
                 ],
                 'sources' : bootctl_sources,
                 'link_with' : boot_link_with,
-                'dependencies' : [libblkid, libopenssl],
+                'dependencies' : [libopenssl],
         },
 ]

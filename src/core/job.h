@@ -162,17 +162,17 @@ int job_coldplug(Job *j);
 JobDependency* job_dependency_new(Job *subject, Job *object, bool matters, bool conflicts);
 void job_dependency_free(JobDependency *l);
 
-JobType job_type_lookup_merge(JobType a, JobType b) _pure_;
+JobType job_type_lookup_merge(JobType a, JobType b) _const_;
 
-_pure_ static inline bool job_type_is_mergeable(JobType a, JobType b) {
+static inline bool job_type_is_mergeable(JobType a, JobType b) {
         return job_type_lookup_merge(a, b) >= 0;
 }
 
-_pure_ static inline bool job_type_is_conflicting(JobType a, JobType b) {
+static inline bool job_type_is_conflicting(JobType a, JobType b) {
         return a != JOB_NOP && b != JOB_NOP && !job_type_is_mergeable(a, b);
 }
 
-_pure_ static inline bool job_type_is_superset(JobType a, JobType b) {
+static inline bool job_type_is_superset(JobType a, JobType b) {
         /* Checks whether operation a is a "superset" of b in its actions */
         if (b == JOB_NOP)
                 return true;
@@ -181,7 +181,7 @@ _pure_ static inline bool job_type_is_superset(JobType a, JobType b) {
         return a == job_type_lookup_merge(a, b);
 }
 
-bool job_type_is_redundant(JobType a, UnitActiveState b) _pure_;
+bool job_type_is_redundant(JobType a, UnitActiveState b) _const_;
 
 /* Collapses a state-dependent job type into a simpler type by observing
  * the state of the unit which it is going to be applied to. */
@@ -209,14 +209,11 @@ void job_add_to_gc_queue(Job *j);
 int job_get_before(Job *j, Job*** ret);
 int job_get_after(Job *j, Job*** ret);
 
-const char* job_type_to_string(JobType t) _const_;
-JobType job_type_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(job_type, JobType);
 
-const char* job_state_to_string(JobState t) _const_;
-JobState job_state_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(job_state, JobState);
 
-const char* job_result_to_string(JobResult t) _const_;
-JobResult job_result_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(job_result, JobResult);
 
 const char* job_type_to_access_method(JobType t);
 

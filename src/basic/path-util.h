@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #pragma once
 
-#include "forward.h"
+#include "basic-forward.h"
 
 #define PATH_SPLIT_BIN(x) x "sbin:" x "bin"
 #define PATH_SPLIT_BIN_NULSTR(x) x "sbin\0" x "bin\0"
@@ -9,10 +9,11 @@
 #define PATH_MERGED_BIN(x) x "bin"
 #define PATH_MERGED_BIN_NULSTR(x) x "bin\0"
 
-#define DEFAULT_PATH_WITH_SBIN PATH_SPLIT_BIN("/usr/local/") ":" PATH_SPLIT_BIN("/usr/")
+#define DEFAULT_PATH_WITH_FULL_SBIN PATH_SPLIT_BIN("/usr/local/") ":" PATH_SPLIT_BIN("/usr/")
+#define DEFAULT_PATH_WITH_LOCAL_SBIN PATH_SPLIT_BIN("/usr/local/") ":" PATH_MERGED_BIN("/usr/")
 #define DEFAULT_PATH_WITHOUT_SBIN PATH_MERGED_BIN("/usr/local/") ":" PATH_MERGED_BIN("/usr/")
 
-#define DEFAULT_PATH_COMPAT PATH_SPLIT_BIN("/usr/local/") ":" PATH_SPLIT_BIN("/usr/") ":" PATH_SPLIT_BIN("/")
+#define DEFAULT_PATH_COMPAT DEFAULT_PATH_WITH_FULL_SBIN ":" PATH_SPLIT_BIN("/")
 
 const char* default_PATH(void);
 
@@ -134,8 +135,15 @@ int fsck_exists_for_fstype(const char *fstype);
 int path_find_first_component(const char **p, bool accept_dot_dot, const char **ret);
 int path_find_last_component(const char *path, bool accept_dot_dot, const char **next, const char **ret);
 const char* last_path_component(const char *path);
-int path_extract_filename(const char *path, char **ret);
-int path_extract_directory(const char *path, char **ret);
+
+int path_split_prefix_filename(const char *path, char **ret_dir, char **ret_filename);
+static inline int path_extract_filename(const char *path, char **ret) {
+        return path_split_prefix_filename(path, NULL, ret);
+}
+static inline int path_extract_directory(const char *path, char **ret) {
+        int r = path_split_prefix_filename(path, ret, NULL);
+        return r < 0 ? r : 0; /* suppress O_DIRECTORY */
+}
 
 bool filename_part_is_valid(const char *p) _pure_;
 bool filename_is_valid(const char *p) _pure_;

@@ -2,7 +2,7 @@
 #pragma once
 
 #include "bitmap.h"
-#include "forward.h"
+#include "shared-forward.h"
 
 /* This defines pretty names for the LSB 'start' verb exit codes. Note that they shouldn't be confused with
  * the LSB 'status' verb exit codes which are defined very differently. For details see:
@@ -70,6 +70,7 @@ enum {
         EXIT_CREDENTIALS,
         EXIT_BPF,
         EXIT_KSM,
+        EXIT_MEMORY_THP,
 
         EXIT_EXCEPTION = 255,  /* Whenever we want to propagate an abnormal/signal exit, in line with bash */
 };
@@ -89,7 +90,7 @@ typedef struct ExitStatusSet {
 
 const char* exit_status_to_string(int code, ExitStatusClass class) _const_;
 const char* exit_status_class(int code) _const_;
-int exit_status_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP_FROM_STRING(exit_status, int);
 
 typedef struct ExitStatusMapping {
         const char *name;

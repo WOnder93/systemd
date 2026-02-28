@@ -46,6 +46,7 @@ typedef enum ServiceExecCommand {
         SERVICE_EXEC_START,
         SERVICE_EXEC_START_POST,
         SERVICE_EXEC_RELOAD,
+        SERVICE_EXEC_RELOAD_POST,
         SERVICE_EXEC_STOP,
         SERVICE_EXEC_STOP_POST,
         _SERVICE_EXEC_COMMAND_MAX,
@@ -53,9 +54,9 @@ typedef enum ServiceExecCommand {
 } ServiceExecCommand;
 
 typedef enum NotifyState {
-        NOTIFY_UNKNOWN,
         NOTIFY_READY,
         NOTIFY_RELOADING,
+        NOTIFY_RELOAD_READY,
         NOTIFY_STOPPING,
         _NOTIFY_STATE_MAX,
         _NOTIFY_STATE_INVALID = -EINVAL,
@@ -94,6 +95,15 @@ typedef enum ServiceRestartMode {
         _SERVICE_RESTART_MODE_MAX,
         _SERVICE_RESTART_MODE_INVALID = -EINVAL,
 } ServiceRestartMode;
+
+typedef enum ServiceRefreshOnReload {
+        SERVICE_RELOAD_EXTENSIONS  = 1 << 0,
+        SERVICE_RELOAD_CREDENTIALS = 1 << 1,
+        _SERVICE_REFRESH_ON_RELOAD_ALL = (1 << 2) - 1,
+        _SERVICE_REFRESH_ON_RELOAD_INVALID = -EINVAL,
+} ServiceRefreshOnReload;
+
+#define SERVICE_REFRESH_ON_RELOAD_DEFAULT SERVICE_RELOAD_EXTENSIONS
 
 typedef struct ServiceFDStore {
         Service *service;
@@ -224,6 +234,9 @@ typedef struct Service {
         int stdout_fd;
         int stderr_fd;
 
+        /* File descriptor received from RootDirectoryFileDescriptor= */
+        int root_directory_fd;
+
         /* If service spawned from transient unit, extra file descriptors can be passed via dbus API */
         ServiceExtraFD *extra_fds;
         size_t n_extra_fds;
@@ -232,6 +245,10 @@ typedef struct Service {
 
         int reload_signal;
         usec_t reload_begin_usec;
+
+        bool refresh_on_reload_set;
+        ServiceRefreshOnReload refresh_on_reload_flags;
+        ServiceRefreshOnReload refreshed_mask;
 
         OOMPolicy oom_policy;
 
@@ -262,40 +279,33 @@ extern const UnitVTable service_vtable;
 int service_set_socket_fd(Service *s, int fd, struct Socket *socket, struct SocketPeer *peer, bool selinux_context_net);
 void service_release_socket_fd(Service *s);
 
-usec_t service_restart_usec_next(Service *s);
+usec_t service_restart_usec_next(const Service *s) _pure_;
 
 int service_determine_exec_selinux_label(Service *s, char **ret);
 
-const char* service_restart_to_string(ServiceRestart i) _const_;
-ServiceRestart service_restart_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(service_restart, ServiceRestart);
 
-const char* service_restart_mode_to_string(ServiceRestartMode i) _const_;
-ServiceRestartMode service_restart_mode_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(service_restart_mode, ServiceRestartMode);
 
-const char* service_type_to_string(ServiceType i) _const_;
-ServiceType service_type_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(service_type, ServiceType);
 
-const char* service_exit_type_to_string(ServiceExitType i) _const_;
-ServiceExitType service_exit_type_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(service_exit_type, ServiceExitType);
 
-const char* service_exec_command_to_string(ServiceExecCommand i) _const_;
-ServiceExecCommand service_exec_command_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(service_exec_command, ServiceExecCommand);
 
-const char* service_exec_ex_command_to_string(ServiceExecCommand i) _const_;
-ServiceExecCommand service_exec_ex_command_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(service_exec_ex_command, ServiceExecCommand);
 
-const char* notify_state_to_string(NotifyState i) _const_;
-NotifyState notify_state_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(notify_state, NotifyState);
 
-const char* service_result_to_string(ServiceResult i) _const_;
-ServiceResult service_result_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(service_result, ServiceResult);
 
-const char* service_timeout_failure_mode_to_string(ServiceTimeoutFailureMode i) _const_;
-ServiceTimeoutFailureMode service_timeout_failure_mode_from_string(const char *s) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(service_timeout_failure_mode, ServiceTimeoutFailureMode);
+
+ServiceRefreshOnReload service_refresh_on_reload_flag_from_string(const char *s) _pure_;
+int service_refresh_on_reload_from_string_many(const char *s, ServiceRefreshOnReload *ret);
+int service_refresh_on_reload_to_strv(ServiceRefreshOnReload flags, char ***ret);
 
 DEFINE_CAST(SERVICE, Service);
-
-#define STATUS_TEXT_MAX (16U*1024U)
 
 /* Only exported for unit tests */
 int service_deserialize_exec_command(Unit *u, const char *key, const char *value);

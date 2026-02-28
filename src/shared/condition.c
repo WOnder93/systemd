@@ -775,7 +775,7 @@ static int condition_test_needs_update(Condition *c, char **env) {
         assert(c->parameter);
         assert(c->type == CONDITION_NEEDS_UPDATE);
 
-        r = proc_cmdline_get_bool("systemd.condition_needs_update", /* flags = */ 0, &b);
+        r = proc_cmdline_get_bool("systemd.condition_needs_update", /* flags= */ 0, &b);
         if (r < 0)
                 log_debug_errno(r, "Failed to parse systemd.condition_needs_update= kernel command line argument, ignoring: %m");
         if (r > 0)
@@ -955,7 +955,7 @@ static int condition_test_path_is_mount_point(Condition *c, char **env) {
         assert(c->parameter);
         assert(c->type == CONDITION_PATH_IS_MOUNT_POINT);
 
-        return path_is_mount_point_full(c->parameter, /* root = */ NULL, AT_SYMLINK_FOLLOW) > 0;
+        return path_is_mount_point_full(c->parameter, /* root= */ NULL, AT_SYMLINK_FOLLOW) > 0;
 }
 
 static int condition_test_path_is_read_write(Condition *c, char **env) {
@@ -990,6 +990,14 @@ static int condition_test_path_is_encrypted(Condition *c, char **env) {
                 log_debug_errno(r, "Failed to determine if '%s' is encrypted: %m", c->parameter);
 
         return r > 0;
+}
+
+static int condition_test_path_is_socket(Condition *c, char **env) {
+        assert(c);
+        assert(c->parameter);
+        assert(c->type == CONDITION_PATH_IS_SOCKET);
+
+        return is_socket(c->parameter) > 0;
 }
 
 static int condition_test_directory_not_empty(Condition *c, char **env) {
@@ -1091,7 +1099,7 @@ static int condition_test_psi(Condition *c, char **env) {
                         return log_debug_errno(r, "Cannot determine slice \"%s\" cgroup path: %m", slice);
 
                 /* We might be running under the user manager, so get the root path and prefix it accordingly. */
-                r = cg_pid_get_path(SYSTEMD_CGROUP_CONTROLLER, getpid_cached(), &root_scope);
+                r = cg_pid_get_path(getpid_cached(), &root_scope);
                 if (r < 0)
                         return log_debug_errno(r, "Failed to get root cgroup path: %m");
 
@@ -1110,7 +1118,7 @@ static int condition_test_psi(Condition *c, char **env) {
                         free_and_replace(slice_path, slice_joined);
                 }
 
-                r = cg_get_path(SYSTEMD_CGROUP_CONTROLLER, slice_path, controller, &pressure_path);
+                r = cg_get_path(slice_path, controller, &pressure_path);
                 if (r < 0)
                         return log_debug_errno(r, "Error getting cgroup pressure path from %s: %m", slice_path);
 
@@ -1233,6 +1241,7 @@ int condition_test(Condition *c, char **env) {
                 [CONDITION_PATH_IS_MOUNT_POINT]      = condition_test_path_is_mount_point,
                 [CONDITION_PATH_IS_READ_WRITE]       = condition_test_path_is_read_write,
                 [CONDITION_PATH_IS_ENCRYPTED]        = condition_test_path_is_encrypted,
+                [CONDITION_PATH_IS_SOCKET]           = condition_test_path_is_socket,
                 [CONDITION_DIRECTORY_NOT_EMPTY]      = condition_test_directory_not_empty,
                 [CONDITION_FILE_NOT_EMPTY]           = condition_test_file_not_empty,
                 [CONDITION_FILE_IS_EXECUTABLE]       = condition_test_file_is_executable,
@@ -1370,6 +1379,7 @@ static const char* const _condition_type_table[_CONDITION_TYPE_MAX] = {
         [CONDITION_PATH_IS_MOUNT_POINT]      = "ConditionPathIsMountPoint",
         [CONDITION_PATH_IS_READ_WRITE]       = "ConditionPathIsReadWrite",
         [CONDITION_PATH_IS_ENCRYPTED]        = "ConditionPathIsEncrypted",
+        [CONDITION_PATH_IS_SOCKET]           = "ConditionPathIsSocket",
         [CONDITION_DIRECTORY_NOT_EMPTY]      = "ConditionDirectoryNotEmpty",
         [CONDITION_FILE_NOT_EMPTY]           = "ConditionFileNotEmpty",
         [CONDITION_FILE_IS_EXECUTABLE]       = "ConditionFileIsExecutable",
@@ -1425,6 +1435,7 @@ static const char* const _assert_type_table[_CONDITION_TYPE_MAX] = {
         [CONDITION_PATH_IS_MOUNT_POINT]      = "AssertPathIsMountPoint",
         [CONDITION_PATH_IS_READ_WRITE]       = "AssertPathIsReadWrite",
         [CONDITION_PATH_IS_ENCRYPTED]        = "AssertPathIsEncrypted",
+        [CONDITION_PATH_IS_SOCKET]           = "AssertPathIsSocket",
         [CONDITION_DIRECTORY_NOT_EMPTY]      = "AssertDirectoryNotEmpty",
         [CONDITION_FILE_NOT_EMPTY]           = "AssertFileNotEmpty",
         [CONDITION_FILE_IS_EXECUTABLE]       = "AssertFileIsExecutable",

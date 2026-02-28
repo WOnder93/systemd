@@ -59,6 +59,7 @@ systemd_networkd_extract_sources = files(
         'networkd-ipv6ll.c',
         'networkd-json.c',
         'networkd-link-bus.c',
+        'networkd-link-varlink.c',
         'networkd-link.c',
         'networkd-lldp-rx.c',
         'networkd-lldp-tx.c',
@@ -74,6 +75,7 @@ systemd_networkd_extract_sources = files(
         'networkd-ntp.c',
         'networkd-queue.c',
         'networkd-radv.c',
+        'networkd-resolve-hook.c',
         'networkd-route.c',
         'networkd-route-metric.c',
         'networkd-route-nexthop.c',
@@ -86,8 +88,11 @@ systemd_networkd_extract_sources = files(
         'networkd-state-file.c',
         'networkd-sysctl.c',
         'networkd-util.c',
+        'networkd-varlink-metrics.c',
         'networkd-wifi.c',
         'networkd-wiphy.c',
+        'networkd-wwan.c',
+        'networkd-wwan-bus.c',
         'tc/cake.c',
         'tc/codel.c',
         'tc/drr.c',
@@ -115,7 +120,6 @@ systemd_networkd_extract_sources = files(
 )
 
 systemd_networkd_wait_online_sources = files(
-        'wait-online/dns-configuration.c',
         'wait-online/wait-online-link.c',
         'wait-online/wait-online-manager.c',
         'wait-online/wait-online.c',
@@ -197,7 +201,7 @@ executables += [
                 'name' : 'systemd-networkd',
                 'dbus' : true,
                 'conditions' : ['ENABLE_NETWORKD'],
-                'sources' : systemd_networkd_sources + systemd_networkd_extract_sources,
+                'sources' : systemd_networkd_sources,
                 'extract' : systemd_networkd_extract_sources,
                 'include_directories' : network_includes,
                 'link_with' : [
@@ -226,7 +230,7 @@ executables += [
         },
         libexec_template + {
                 'name' : 'systemd-network-generator',
-                'sources' : files('generator/network-generator.c', 'generator/network-generator-main.c'),
+                'sources' : files('generator/network-generator-main.c'),
                 'extract' : files('generator/network-generator.c'),
                 'link_with' : networkd_link_with,
         },

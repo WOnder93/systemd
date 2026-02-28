@@ -57,7 +57,7 @@ DLSYM_PROTOTYPE(p11_kit_uri_new) = NULL;
 DLSYM_PROTOTYPE(p11_kit_uri_parse) = NULL;
 
 int uri_from_string(const char *p, P11KitUri **ret) {
-        _cleanup_(sym_p11_kit_uri_freep) P11KitUri *uri = NULL;
+        _cleanup_(p11_kit_uri_freep) P11KitUri *uri = NULL;
         int r;
 
         assert(p);
@@ -265,15 +265,15 @@ int pkcs11_token_login(
                 CK_SLOT_ID slotid,
                 const CK_TOKEN_INFO *token_info,
                 const char *friendly_name,
-                const char *askpw_icon,
-                const char *askpw_keyring,
-                const char *askpw_credential,
+                const char *ask_password_icon,
+                const char *ask_password_keyring,
+                const char *ask_password_credential,
                 usec_t until,
-                AskPasswordFlags askpw_flags,
+                AskPasswordFlags ask_password_flags,
                 char **ret_used_pin) {
 
         _cleanup_free_ char *token_uri_string = NULL, *token_uri_escaped = NULL, *id = NULL, *token_label = NULL;
-        _cleanup_(sym_p11_kit_uri_freep) P11KitUri *token_uri = NULL;
+        _cleanup_(p11_kit_uri_freep) P11KitUri *token_uri = NULL;
         CK_TOKEN_INFO updated_token_info;
         int uri_result, r;
         CK_RV rv;
@@ -324,7 +324,7 @@ int pkcs11_token_login(
                         if (!passwords)
                                 return log_oom();
 
-                } else if (FLAGS_SET(askpw_flags, ASK_PASSWORD_HEADLESS))
+                } else if (FLAGS_SET(ask_password_flags, ASK_PASSWORD_HEADLESS))
                         return log_error_errno(SYNTHETIC_ERRNO(ENOPKG), "PIN querying disabled via 'headless' option. Use the 'PIN' environment variable.");
                 else {
                         _cleanup_free_ char *text = NULL;
@@ -351,16 +351,16 @@ int pkcs11_token_login(
                         AskPasswordRequest req = {
                                 .tty_fd = -EBADF,
                                 .message = text,
-                                .icon = askpw_icon,
+                                .icon = ask_password_icon,
                                 .id = id,
-                                .keyring = askpw_keyring,
-                                .credential = askpw_credential,
+                                .keyring = ask_password_keyring,
+                                .credential = ask_password_credential,
                                 .until = until,
                                 .hup_fd = -EBADF,
                         };
 
                         /* We never cache PINs, simply because it's fatal if we use wrong PINs, since usually there are only 3 tries */
-                        r = ask_password_auto(&req, askpw_flags, &passwords);
+                        r = ask_password_auto(&req, ask_password_flags, &passwords);
                         if (r < 0)
                                 return log_error_errno(r, "Failed to query PIN for security token '%s': %m", token_label);
                 }
@@ -546,7 +546,6 @@ int pkcs11_token_read_public_key(
                 if (!os)
                         return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Unable to decode CKA_EC_POINT.");
 
-#if OPENSSL_VERSION_MAJOR >= 3
                 _cleanup_(EVP_PKEY_CTX_freep) EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(NULL, "EC", NULL);
                 if (!ctx)
                         return log_debug_errno(SYNTHETIC_ERRNO(EIO), "Failed to create an EVP_PKEY_CTX for EC.");
@@ -642,31 +641,6 @@ int pkcs11_token_read_public_key(
 
                 if (EVP_PKEY_fromdata(ctx, &pkey, EVP_PKEY_PUBLIC_KEY, ec_params) != 1)
                         return log_debug_errno(SYNTHETIC_ERRNO(EIO), "Failed to create EVP_PKEY from EC parameters.");
-#else
-                _cleanup_(EC_POINT_freep) EC_POINT *point = EC_POINT_new(group);
-                if (!point)
-                        return log_oom_debug();
-
-                if (EC_POINT_oct2point(group, point, os->data, os->length, NULL) != 1)
-                        return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Unable to decode CKA_EC_POINT.");
-
-                 _cleanup_(EC_KEY_freep) EC_KEY *ec_key = EC_KEY_new();
-                if (!ec_key)
-                        return log_oom_debug();
-
-                if (EC_KEY_set_group(ec_key, group) != 1)
-                        return log_debug_errno(SYNTHETIC_ERRNO(EIO), "Failed to set group for EC_KEY.");
-
-                if (EC_KEY_set_public_key(ec_key, point) != 1)
-                        return log_debug_errno(SYNTHETIC_ERRNO(EIO), "Failed to set public key for EC_KEY.");
-
-                pkey = EVP_PKEY_new();
-                if (!pkey)
-                        return log_oom_debug();
-
-                if (EVP_PKEY_set1_EC_KEY(pkey, ec_key) != 1)
-                        return log_debug_errno(SYNTHETIC_ERRNO(EIO), "Failed to assign EC_KEY to EVP_PKEY.");
-#endif
                 break;
         }
         default:
@@ -1331,7 +1305,7 @@ static int slot_process(
                 pkcs11_find_token_callback_t callback,
                 void *userdata) {
 
-        _cleanup_(sym_p11_kit_uri_freep) P11KitUri* slot_uri = NULL, *token_uri = NULL;
+        _cleanup_(p11_kit_uri_freep) P11KitUri* slot_uri = NULL, *token_uri = NULL;
         _cleanup_free_ char *token_uri_string = NULL;
         CK_TOKEN_INFO token_info;
         CK_SLOT_INFO slot_info;
@@ -1411,7 +1385,7 @@ static int module_process(
                 pkcs11_find_token_callback_t callback,
                 void *userdata) {
 
-        _cleanup_(sym_p11_kit_uri_freep) P11KitUri* module_uri = NULL;
+        _cleanup_(p11_kit_uri_freep) P11KitUri* module_uri = NULL;
         _cleanup_free_ char *name = NULL, *module_uri_string = NULL;
         _cleanup_free_ CK_SLOT_ID *slotids = NULL;
         CK_ULONG n_slotids = 0;
@@ -1483,8 +1457,8 @@ int pkcs11_find_token(
                 pkcs11_find_token_callback_t callback,
                 void *userdata) {
 
-        _cleanup_(sym_p11_kit_modules_finalize_and_releasep) CK_FUNCTION_LIST **modules = NULL;
-        _cleanup_(sym_p11_kit_uri_freep) P11KitUri *search_uri = NULL;
+        _cleanup_(p11_kit_modules_finalize_and_releasep) CK_FUNCTION_LIST **modules = NULL;
+        _cleanup_(p11_kit_uri_freep) P11KitUri *search_uri = NULL;
         int r;
 
         r = dlopen_p11kit();
@@ -1739,7 +1713,7 @@ static int list_callback(
                 void *userdata) {
 
         _cleanup_free_ char *token_uri_string = NULL, *token_label = NULL, *token_manufacturer_id = NULL, *token_model = NULL;
-        _cleanup_(sym_p11_kit_uri_freep) P11KitUri *token_uri = NULL;
+        _cleanup_(p11_kit_uri_freep) P11KitUri *token_uri = NULL;
         Table *t = userdata;
         int uri_result, r;
 
@@ -1860,7 +1834,7 @@ static int auto_callback(
                 P11KitUri *uri,
                 void *userdata) {
 
-        _cleanup_(sym_p11_kit_uri_freep) P11KitUri *token_uri = NULL;
+        _cleanup_(p11_kit_uri_freep) P11KitUri *token_uri = NULL;
         char **t = userdata;
         int uri_result, r;
 

@@ -52,10 +52,6 @@ typedef void (*_sd_destroy_t)(void *userdata);
 #  define _sd_pure_ __attribute__((__pure__))
 #endif
 
-#ifndef _sd_const_
-#  define _sd_const_ __attribute__((__const__))
-#endif
-
 /* Note that strictly speaking __deprecated__ has been available before GCC 6. However, starting with GCC 6
  * it also works on enum values, which we are interested in. Since this is a developer-facing feature anyway
  * (as opposed to build engineer-facing), let's hence conditionalize this to gcc 6, given that the developers
@@ -109,6 +105,16 @@ typedef void (*_sd_destroy_t)(void *userdata);
                         func(*p);                               \
         }                                                       \
         struct _sd_useless_struct_to_allow_trailing_semicolon_
+
+#define _SD_DECLARE_TRIVIAL_REF_FUNC(name) \
+        name* name##_ref(name *p)
+
+#define _SD_DECLARE_TRIVIAL_UNREF_FUNC(name) \
+        name* name##_unref(name *p)
+
+#define _SD_DECLARE_TRIVIAL_REF_UNREF_FUNC(name)      \
+        _SD_DECLARE_TRIVIAL_REF_FUNC(name);           \
+        _SD_DECLARE_TRIVIAL_UNREF_FUNC(name)
 
 /* The following macro should be used in all public enums, to force 64-bit wideness on them, so that we can
  * freely extend them later on, without breaking compatibility. */

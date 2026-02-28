@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #pragma once
 
-#include "forward.h"
+#include "shared-forward.h"
 #include "list.h"
 
 typedef enum OpenFileFlag {
@@ -34,5 +34,4 @@ static inline void open_file_free_many(OpenFile **head) {
         LIST_CLEAR(open_files, *ASSERT_PTR(head), open_file_free);
 }
 
-const char* open_file_flags_to_string(OpenFileFlag t) _const_;
-OpenFileFlag open_file_flags_from_string(const char *t) _pure_;
+DECLARE_STRING_TABLE_LOOKUP(open_file_flags, OpenFileFlag);

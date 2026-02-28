@@ -8,6 +8,7 @@
 #include "bus-match.h"
 #include "constants.h"
 #include "list.h"
+#include "pidref.h"
 #include "runtime-scope.h"
 #include "socket-util.h"
 
@@ -164,6 +165,7 @@ typedef struct sd_bus {
         BusState state;
         int input_fd, output_fd;
         int inotify_fd;
+        int exit_code;
         int message_version;
         int message_endian;
 
@@ -253,8 +255,10 @@ typedef struct sd_bus {
 
         uint64_t creds_mask;
 
+        /* Accumulated fds from multiple recvmsg() calls for a single D-Bus message */
         int *fds;
         size_t n_fds;
+        bool got_ctrunc; /* MSG_CTRUNC was seen during any recvmsg() */
 
         char *exec_path;
         char **exec_argv;
@@ -270,7 +274,7 @@ typedef struct sd_bus {
         unsigned n_memfd_cache;
 
         uint64_t origin_id;
-        pid_t busexec_pid;
+        PidRef busexec_pidref;
 
         unsigned iteration_counter;
 
@@ -403,6 +407,6 @@ int bus_maybe_reply_error(sd_bus_message *m, int r, const sd_bus_error *e);
                         return sd_bus_error_set_errno(error, r);        \
         } while (false)
 
-void bus_enter_closing(sd_bus *bus);
+void bus_enter_closing(sd_bus *bus, int exit_code);
 
 void bus_set_state(sd_bus *bus, BusState state);

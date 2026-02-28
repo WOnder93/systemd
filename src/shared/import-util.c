@@ -125,6 +125,7 @@ int import_url_change_suffix(
 static const char* const import_type_table[_IMPORT_TYPE_MAX] = {
         [IMPORT_RAW] = "raw",
         [IMPORT_TAR] = "tar",
+        [IMPORT_OCI] = "oci",
 };
 
 DEFINE_STRING_TABLE_LOOKUP(import_type, ImportType);
@@ -166,7 +167,7 @@ int tar_strip_suffixes(const char *name, char **ret) {
         return 0;
 }
 
-int raw_strip_suffixes(const char *p, char **ret) {
+int raw_strip_suffixes(const char *name, char **ret) {
 
         static const char suffixes[] =
                 ".xz\0"
@@ -182,7 +183,7 @@ int raw_strip_suffixes(const char *p, char **ret) {
 
         _cleanup_free_ char *q = NULL;
 
-        q = strdup(p);
+        q = strdup(name);
         if (!q)
                 return -ENOMEM;
 

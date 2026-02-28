@@ -12,7 +12,6 @@
 #include "log.h"
 #include "main-func.h"
 #include "service-util.h"
-#include "signal-util.h"
 
 static int run(int argc, char *argv[]) {
         _cleanup_(manager_freep) Manager *m = NULL;
@@ -25,13 +24,12 @@ static int run(int argc, char *argv[]) {
                                "A service to create, remove, change or inspect home areas.",
                                BUS_IMPLEMENTATIONS(&manager_object,
                                                    &log_control_object),
+                               /* runtime_scope= */ NULL,
                                argc, argv);
         if (r <= 0)
                 return r;
 
         umask(0022);
-
-        assert_se(sigprocmask_many(SIG_BLOCK, /* ret_old_mask= */ NULL, SIGCHLD) >= 0);
 
         r = manager_new(&m);
         if (r < 0)

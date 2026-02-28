@@ -33,32 +33,70 @@ int user_search_dirs(const char *suffix, char ***ret_config_dirs, char ***ret_da
         return 0;
 }
 
-int runtime_directory(RuntimeScope scope, const char *suffix, char **ret) {
-        int r;
-
-        assert(IN_SET(scope, RUNTIME_SCOPE_SYSTEM, RUNTIME_SCOPE_USER));
-        assert(suffix);
+int config_directory_generic(RuntimeScope scope, const char *suffix, char **ret) {
         assert(ret);
 
-        /* Accept $RUNTIME_DIRECTORY as authoritative
+        /* This does not bother with $CONFIGURATION_DIRECTORY, and hence can be applied to get other
+         * service's config dir */
+
+        switch (scope) {
+        case RUNTIME_SCOPE_USER:
+                return xdg_user_config_dir(suffix, ret);
+
+        case RUNTIME_SCOPE_SYSTEM: {
+                char *d = path_join("/etc", suffix);
+                if (!d)
+                        return -ENOMEM;
+                *ret = d;
+                return 0;
+        }
+
+        default:
+                return -EINVAL;
+        }
+}
+
+int runtime_directory_generic(RuntimeScope scope, const char *suffix, char **ret) {
+        assert(ret);
+
+        /* This does not bother with $RUNTIME_DIRECTORY, and hence can be applied to get other service's
+         * runtime dir */
+
+        switch (scope) {
+        case RUNTIME_SCOPE_USER:
+                return xdg_user_runtime_dir(suffix, ret);
+
+        case RUNTIME_SCOPE_SYSTEM: {
+                char *d = path_join("/run", suffix);
+                if (!d)
+                        return -ENOMEM;
+                *ret = d;
+                return 0;
+        }
+
+        default:
+                return -EINVAL;
+        }
+}
+
+int runtime_directory(RuntimeScope scope, const char *fallback_suffix, char **ret) {
+        int r;
+
+        assert(ret);
+
+        /* Accept $RUNTIME_DIRECTORY as authoritative, i.e. only works for our service's own runtime dir.
+         *
          * If it's missing, apply the suffix to /run/, or $XDG_RUNTIME_DIR if we are in a user runtime scope.
          *
-         * Return value indicates whether the suffix was applied or not */
+         * Return value indicates whether the suffix was applied or not. */
 
         const char *e = secure_getenv("RUNTIME_DIRECTORY");
         if (e)
                 return strdup_to(ret, e);
 
-        if (scope == RUNTIME_SCOPE_USER) {
-                r = xdg_user_runtime_dir(suffix, ret);
-                if (r < 0)
-                        return r;
-        } else {
-                char *d = path_join("/run", suffix);
-                if (!d)
-                        return -ENOMEM;
-                *ret = d;
-        }
+        r = runtime_directory_generic(scope, fallback_suffix, ret);
+        if (r < 0)
+                return r;
 
         return 1;
 }
@@ -193,7 +231,7 @@ static int acquire_lookup_dirs(
                 },
                 [LOOKUP_DIR_ATTACHED] = {
                         [RUNTIME_SCOPE_SYSTEM] = { "/etc/systemd/system.attached", "/run/systemd/system.attached" },
-                        /* Portable services are not available to regular users for now. */
+                        [RUNTIME_SCOPE_USER]   = { "systemd/user.attached",        "systemd/user.attached"        },
                 },
         };
 
@@ -311,7 +349,9 @@ static int get_paths_from_environ(const char *var, char ***ret) {
 
 static char** user_unit_search_dirs(
                 const char *persistent_config,
+                const char *persistent_attached,
                 const char *runtime_config,
+                const char *runtime_attached,
                 const char *global_persistent_config,
                 const char *global_runtime_config,
                 const char *generator,
@@ -326,6 +366,7 @@ static char** user_unit_search_dirs(
         /* The returned strv might contain duplicates, and we expect caller to filter them. */
 
         assert(persistent_config);
+        assert(persistent_attached);
         assert(global_persistent_config);
         assert(global_runtime_config);
         assert(persistent_control);
@@ -337,28 +378,30 @@ static char** user_unit_search_dirs(
                          STRV_IFNOTNULL(runtime_control),
                          STRV_IFNOTNULL(transient),
                          STRV_IFNOTNULL(generator_early),
-                         persistent_config);
+                         persistent_config,
+                         persistent_attached);
         if (!paths)
                 return NULL;
 
-        if (strv_extend_strv_consume(&paths, TAKE_PTR(config_dirs), /* filter_duplicates = */ false) < 0)
+        if (strv_extend_strv_consume(&paths, TAKE_PTR(config_dirs), /* filter_duplicates= */ false) < 0)
                 return NULL;
 
         /* global config has lower priority than the user config of the same type */
         if (strv_extend(&paths, global_persistent_config) < 0)
                 return NULL;
 
-        if (strv_extend_strv(&paths, (char* const*) user_config_unit_paths, /* filter_duplicates = */ false) < 0)
+        if (strv_extend_strv(&paths, (char* const*) user_config_unit_paths, /* filter_duplicates= */ false) < 0)
                 return NULL;
 
         /* strv_extend_many() can deal with NULL-s in arguments */
         if (strv_extend_many(&paths,
                              runtime_config,
+                             runtime_attached,
                              global_runtime_config,
                              generator) < 0)
                 return NULL;
 
-        if (strv_extend_strv_consume(&paths, TAKE_PTR(data_dirs), /* filter_duplicates = */ false) < 0)
+        if (strv_extend_strv_consume(&paths, TAKE_PTR(data_dirs), /* filter_duplicates= */ false) < 0)
                 return NULL;
 
         if (strv_extend_strv(&paths, (char* const*) user_data_unit_paths, false) < 0)
@@ -513,7 +556,8 @@ int lookup_paths_init(
                         break;
 
                 case RUNTIME_SCOPE_USER:
-                        add = user_unit_search_dirs(persistent_config, runtime_config,
+                        add = user_unit_search_dirs(persistent_config, persistent_attached,
+                                                    runtime_config, runtime_attached,
                                                     global_persistent_config, global_runtime_config,
                                                     generator, generator_early, generator_late,
                                                     transient,
@@ -528,7 +572,7 @@ int lookup_paths_init(
                         return -ENOMEM;
 
                 /* strv_uniq() below would filter all duplicates against the final strv */
-                r = strv_extend_strv_consume(&paths, TAKE_PTR(add), /* filter_duplicates = */ false);
+                r = strv_extend_strv_consume(&paths, TAKE_PTR(add), /* filter_duplicates= */ false);
                 if (r < 0)
                         return r;
         }
@@ -678,7 +722,6 @@ static const char* const user_env_generator_paths[] = {
 };
 
 char** generator_binary_paths_internal(RuntimeScope scope, bool env_generator) {
-
         static const struct {
                 const char *env_name;
                 const char * const *paths[_RUNTIME_SCOPE_MAX];
@@ -710,7 +753,7 @@ char** generator_binary_paths_internal(RuntimeScope scope, bool env_generator) {
                 return NULL;
 
         if (!paths || r > 0) {
-                r = strv_extend_strv(&paths, (char* const*) generator_paths, /* filter_duplicates = */ true);
+                r = strv_extend_strv(&paths, (char* const*) generator_paths, /* filter_duplicates= */ true);
                 if (r < 0)
                         return NULL;
         }

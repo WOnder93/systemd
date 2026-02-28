@@ -26,7 +26,6 @@
 #include "detach-swap.h"
 #include "errno-util.h"
 #include "exec-util.h"
-#include "extract-word.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "format-util.h"
@@ -36,6 +35,7 @@
 #include "log.h"
 #include "parse-util.h"
 #include "pidref.h"
+#include "printk-util.h"
 #include "process-util.h"
 #include "reboot-util.h"
 #include "rlimit-util.h"
@@ -43,7 +43,6 @@
 #include "signal-util.h"
 #include "string-util.h"
 #include "switch-root.h"
-#include "sysctl-util.h"
 #include "terminal-util.h"
 #include "time-util.h"
 #include "umount.h"
@@ -229,8 +228,6 @@ int sync_with_progress(int fd) {
         _cleanup_(pidref_done) PidRef pidref = PIDREF_NULL;
         int r;
 
-        BLOCK_SIGNALS(SIGCHLD);
-
         /* Due to the possibility of the sync operation hanging, we fork a child process and monitor
          * the progress. If the timeout lapses, the assumption is that the particular sync stalled. */
 
@@ -253,12 +250,15 @@ int sync_with_progress(int fd) {
          * SYNC_PROGRESS_ATTEMPTS lapse without progress being made,
          * we assume that the sync is stalled */
         for (unsigned checks = 0; checks < SYNC_PROGRESS_ATTEMPTS; checks++) {
-                r = wait_for_terminate_with_timeout(pidref.pid, SYNC_TIMEOUT_USEC);
-                if (r == 0)
+                siginfo_t si;
+
+                r = pidref_wait_for_terminate_full(&pidref, SYNC_TIMEOUT_USEC, &si);
+                if (r >= 0 && si.si_code == CLD_EXITED && si.si_status == EXIT_SUCCESS)
                         /* Sync finished without error (sync() call itself does not return an error code) */
                         return 0;
                 if (r != -ETIMEDOUT)
-                        return log_error_errno(r, "Failed to sync %s: %m", what);
+                        return log_error_errno(r < 0 ? r : SYNTHETIC_ERRNO(EPROTO),
+                                               "Failed to sync %s: %m", what);
 
                 /* Reset the check counter if we made some progress */
                 if (sync_making_progress(&dirty) > 0)
@@ -272,42 +272,14 @@ int sync_with_progress(int fd) {
         return r;
 }
 
-static int read_current_sysctl_printk_log_level(void) {
-        _cleanup_free_ char *sysctl_printk_vals = NULL, *sysctl_printk_curr = NULL;
-        int current_lvl;
-        const char *p;
-        int r;
-
-        r = sysctl_read("kernel/printk", &sysctl_printk_vals);
-        if (r < 0)
-                return log_debug_errno(r, "Cannot read sysctl kernel.printk: %m");
-
-        p = sysctl_printk_vals;
-        r = extract_first_word(&p, &sysctl_printk_curr, NULL, 0);
-        if (r < 0)
-                return log_debug_errno(r, "Failed to split out kernel printk priority: %m");
-        if (r == 0)
-                return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Short read while reading kernel.printk sysctl");
-
-        r = safe_atoi(sysctl_printk_curr, &current_lvl);
-        if (r < 0)
-                return log_debug_errno(r, "Failed to parse kernel.printk sysctl: %s", sysctl_printk_vals);
-
-        return current_lvl;
-}
-
 static void bump_sysctl_printk_log_level(int min_level) {
-        int current_lvl, r;
-
         /* Set the logging level to be able to see messages with log level smaller or equal to min_level */
 
-        current_lvl = read_current_sysctl_printk_log_level();
+        int current_lvl = sysctl_printk_read();
         if (current_lvl < 0 || current_lvl >= min_level + 1)
                 return;
 
-        r = sysctl_writef("kernel/printk", "%i", min_level + 1);
-        if (r < 0)
-                log_debug_errno(r, "Failed to bump kernel.printk to %i: %m", min_level + 1);
+        (void) sysctl_printk_write(min_level + 1);
 }
 
 static void init_watchdog(void) {
@@ -429,8 +401,9 @@ int main(int argc, char *argv[]) {
 
         init_watchdog();
 
-        /* Lock us into memory */
-        (void) mlockall(MCL_CURRENT|MCL_FUTURE);
+        /* Lock us into memory. If the first mlockall call fails, don't attempt it again. */
+        if (safe_mlockall(MCL_FUTURE|MCL_ONFAULT) >= 0)
+                (void) mlockall(MCL_CURRENT);
 
         /* We need to make mounts private so that we can MS_MOVE in unmount_all(). Kernel does not allow
          * MS_MOVE when parent mountpoints have shared propagation. */
@@ -575,7 +548,15 @@ int main(int argc, char *argv[]) {
                 arg_verb,
                 NULL,
         };
-        (void) execute_directories(dirs, DEFAULT_TIMEOUT_USEC, NULL, NULL, (char**) arguments, NULL, EXEC_DIR_PARALLEL | EXEC_DIR_IGNORE_ERRORS);
+        (void) execute_directories(
+                        "system-shutdown",
+                        dirs,
+                        DEFAULT_TIMEOUT_USEC,
+                        /* callbacks= */ NULL,
+                        /* callback_args= */ NULL,
+                        (char**) arguments,
+                        /* envp= */ NULL,
+                        EXEC_DIR_PARALLEL | EXEC_DIR_IGNORE_ERRORS);
 
         (void) rlimit_nofile_safe();
 
@@ -631,7 +612,10 @@ int main(int argc, char *argv[]) {
                         /* We cheat and exec kexec to avoid doing all its work */
                         log_info("Rebooting with kexec.");
 
-                        r = safe_fork("(sd-kexec)", FORK_RESET_SIGNALS|FORK_CLOSE_ALL_FDS|FORK_LOG|FORK_WAIT, NULL);
+                        r = pidref_safe_fork(
+                                        "(sd-kexec)",
+                                        FORK_RESET_SIGNALS|FORK_CLOSE_ALL_FDS|FORK_LOG|FORK_WAIT,
+                                        /* ret= */ NULL);
                         if (r == 0) {
                                 /* Child */
 

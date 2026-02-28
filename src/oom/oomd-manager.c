@@ -105,7 +105,7 @@ static int process_managed_oom_message(Manager *m, uid_t uid, sd_json_variant *p
                                 m->monitored_swap_cgroup_contexts : m->monitored_mem_pressure_cgroup_contexts;
 
                 if (message.mode == MANAGED_OOM_AUTO) {
-                        (void) oomd_cgroup_context_free(hashmap_remove(monitor_hm, empty_to_root(message.path)));
+                        (void) oomd_cgroup_context_unref(hashmap_remove(monitor_hm, empty_to_root(message.path)));
                         continue;
                 }
 
@@ -210,7 +210,7 @@ static int recursively_get_cgroup_context(Hashmap *new_h, const char *path) {
         assert(new_h);
         assert(path);
 
-        r = cg_enumerate_subgroups(SYSTEMD_CGROUP_CONTROLLER, path, &d);
+        r = cg_enumerate_subgroups(path, &d);
         if (r < 0)
                 return r;
 
@@ -235,13 +235,13 @@ static int recursively_get_cgroup_context(Hashmap *new_h, const char *path) {
 
                 subpath = mfree(subpath);
 
-                r = cg_get_attribute_as_bool("memory", cg_path, "memory.oom.group");
+                r = cg_get_attribute_as_bool(cg_path, "memory.oom.group");
                 /* The cgroup might be gone. Skip it as a candidate since we can't get information on it. */
                 if (r == -ENOMEM)
                         return r;
                 if (r < 0) {
                         log_debug_errno(r, "Failed to read memory.oom.group from %s, ignoring: %m", cg_path);
-                        return 0;
+                        continue;
                 }
                 if (r > 0)
                         r = oomd_insert_cgroup_context(NULL, new_h, cg_path);
@@ -334,9 +334,9 @@ static int acquire_managed_oom_connect(Manager *m) {
         assert(m);
         assert(m->event);
 
-        r = sd_varlink_connect_address(&link, VARLINK_ADDR_PATH_MANAGED_OOM_SYSTEM);
+        r = sd_varlink_connect_address(&link, VARLINK_PATH_MANAGED_OOM_SYSTEM);
         if (r < 0)
-                return log_error_errno(r, "Failed to connect to " VARLINK_ADDR_PATH_MANAGED_OOM_SYSTEM ": %m");
+                return log_error_errno(r, "Failed to connect to %s: %m", VARLINK_PATH_MANAGED_OOM_SYSTEM);
 
         (void) sd_varlink_set_userdata(link, m);
         (void) sd_varlink_set_description(link, "oomd");
@@ -392,7 +392,7 @@ static int monitor_swap_contexts_handler(sd_event_source *s, uint64_t usec, void
         if (oomd_mem_available_below(&m->system_context, 10000 - m->swap_used_limit_permyriad) &&
                         oomd_swap_free_below(&m->system_context, 10000 - m->swap_used_limit_permyriad)) {
                 _cleanup_hashmap_free_ Hashmap *candidates = NULL;
-                _cleanup_free_ char *selected = NULL;
+                OomdCGroupContext *selected = NULL;
                 uint64_t threshold;
 
                 log_debug("Memory used (%"PRIu64") / total (%"PRIu64") and "
@@ -408,29 +408,28 @@ static int monitor_swap_contexts_handler(sd_event_source *s, uint64_t usec, void
                         log_debug_errno(r, "Failed to get monitored swap cgroup candidates, ignoring: %m");
 
                 threshold = m->system_context.swap_total * THRESHOLD_SWAP_USED_PERCENT / 100;
-                r = oomd_kill_by_swap_usage(candidates, threshold, m->dry_run, &selected);
+                r = oomd_select_by_swap_usage(candidates, threshold, &selected);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to select any cgroups based on swap: %m");
+                if (r == 0) {
+                        log_debug("No cgroup candidates found for swap-based OOM action");
+                        return 0;
+                }
+
+                r = oomd_cgroup_kill_mark(m, selected, "memory-used");
                 if (r == -ENOMEM)
                         return log_oom();
                 if (r < 0)
-                        log_notice_errno(r, "Failed to kill any cgroups based on swap: %m");
+                        log_error_errno(r, "Failed to select any cgroups based on swap: %m");
                 else {
                         if (selected && r > 0) {
-                                log_notice("Killed %s due to memory used (%"PRIu64") / total (%"PRIu64") and "
+                                log_notice("Marked %s for killing due to memory used (%"PRIu64") / total (%"PRIu64") and "
                                            "swap used (%"PRIu64") / total (%"PRIu64") being more than "
                                            PERMYRIAD_AS_PERCENT_FORMAT_STR,
-                                           selected,
+                                           selected->path,
                                            m->system_context.mem_used, m->system_context.mem_total,
                                            m->system_context.swap_used, m->system_context.swap_total,
                                            PERMYRIAD_AS_PERCENT_FORMAT_VAL(m->swap_used_limit_permyriad));
-
-                                /* send dbus signal */
-                                (void) sd_bus_emit_signal(m->bus,
-                                                          "/org/freedesktop/oom1",
-                                                          "org.freedesktop.oom1.Manager",
-                                                          "Killed",
-                                                          "ss",
-                                                          selected,
-                                                          "memory-used");
                         }
                         return 0;
                 }
@@ -500,7 +499,7 @@ static int monitor_memory_pressure_contexts_handler(sd_event_source *s, uint64_t
         else if (r == 1 && !in_post_action_delay) {
                 OomdCGroupContext *t;
                 SET_FOREACH(t, targets) {
-                        _cleanup_free_ char *selected = NULL;
+                        OomdCGroupContext *selected = NULL;
 
                         /* Check if there was reclaim activity in the given interval. The concern is the following case:
                          * Pressure climbed, a lot of high-frequency pages were reclaimed, and we killed the offending
@@ -525,38 +524,35 @@ static int monitor_memory_pressure_contexts_handler(sd_event_source *s, uint64_t
                         else
                                 clear_candidates = NULL;
 
-                        r = oomd_kill_by_pgscan_rate(m->monitored_mem_pressure_cgroup_contexts_candidates,
-                                                     /* prefix= */ t->path,
-                                                     /* dry_run= */ m->dry_run,
-                                                     &selected);
+                        r = oomd_select_by_pgscan_rate(m->monitored_mem_pressure_cgroup_contexts_candidates,
+                                                       /* prefix= */ t->path,
+                                                       &selected);
+                        if (r < 0)
+                                return log_error_errno(r, "Failed to select any cgroups based on swap, ignoring: %m");
+                        if (r == 0) {
+                                log_debug("No cgroup candidates found for memory pressure-based OOM action for %s", t->path);
+                                continue;
+                        }
+
+                        r = oomd_cgroup_kill_mark(m, selected, "memory-pressure");
                         if (r == -ENOMEM)
                                 return log_oom();
                         if (r < 0)
-                                log_notice_errno(r, "Failed to kill any cgroups under %s based on pressure: %m", t->path);
+                                log_error_errno(r, "Failed to select any cgroups under %s based on pressure, ignoring: %m", t->path);
+                        else if (r == 0)
+                                /* Already queued for kill by an earlier iteration, try next target without
+                                 * resetting the delay timer. */
+                                continue;
                         else {
-                                /* Don't act on all the high pressure cgroups at once; return as soon as we kill one.
-                                 * If r == 0 then it means there were not eligible candidates, the candidate cgroup
-                                 * disappeared, or the candidate cgroup has no processes by the time we tried to kill
-                                 * it. In either case, go through the event loop again and select a new candidate if
-                                 * pressure is still high. */
+                                /* Don't act on all the high pressure cgroups at once; return as soon as we kill one. */
                                 m->mem_pressure_post_action_delay_start = usec_now;
-                                if (selected && r > 0) {
-                                        log_notice("Killed %s due to memory pressure for %s being %lu.%02lu%% > %lu.%02lu%%"
+                                if (selected)
+                                        log_notice("Marked %s for killing due to memory pressure for %s being %lu.%02lu%% > %lu.%02lu%%"
                                                    " for > %s with reclaim activity",
-                                                   selected, t->path,
+                                                   selected->path, t->path,
                                                    LOADAVG_INT_SIDE(t->memory_pressure.avg10), LOADAVG_DECIMAL_SIDE(t->memory_pressure.avg10),
                                                    LOADAVG_INT_SIDE(t->mem_pressure_limit), LOADAVG_DECIMAL_SIDE(t->mem_pressure_limit),
                                                    FORMAT_TIMESPAN(t->mem_pressure_duration_usec, USEC_PER_SEC));
-
-                                        /* send dbus signal */
-                                        (void) sd_bus_emit_signal(m->bus,
-                                                                  "/org/freedesktop/oom1",
-                                                                  "org.freedesktop.oom1.Manager",
-                                                                  "Killed",
-                                                                  "ss",
-                                                                  selected,
-                                                                  "memory-pressure");
-                                }
                                 return 0;
                         }
                 }
@@ -652,6 +648,8 @@ Manager* manager_free(Manager *m) {
         hashmap_free(m->monitored_swap_cgroup_contexts);
         hashmap_free(m->monitored_mem_pressure_cgroup_contexts);
         hashmap_free(m->monitored_mem_pressure_cgroup_contexts_candidates);
+
+        set_free(m->kill_states);
 
         return mfree(m);
 }
@@ -768,11 +766,12 @@ static int manager_varlink_init(Manager *m, int fd) {
                 return log_error_errno(r, "Failed to register varlink methods: %m");
 
         if (fd < 0)
-                r = sd_varlink_server_listen_address(s, VARLINK_ADDR_PATH_MANAGED_OOM_USER, 0666);
+                r = sd_varlink_server_listen_address(s, VARLINK_PATH_MANAGED_OOM_USER, 0666);
         else
                 r = sd_varlink_server_listen_fd(s, fd);
         if (r < 0)
-                return log_error_errno(r, "Failed to bind to varlink socket: %m");
+                return log_error_errno(r, "Failed to bind to varlink socket %s: %m",
+                                       VARLINK_PATH_MANAGED_OOM_USER);
 
         r = sd_varlink_server_attach_event(s, m->event, SD_EVENT_PRIORITY_NORMAL);
         if (r < 0)

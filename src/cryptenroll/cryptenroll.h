@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #pragma once
 
-#include "forward.h"
+#include "shared-forward.h"
 
 typedef enum EnrollType {
         ENROLL_PASSWORD,
@@ -30,8 +30,5 @@ typedef enum WipeScope {
         _WIPE_SCOPE_INVALID = -EINVAL,
 } WipeScope;
 
-const char* enroll_type_to_string(EnrollType t);
-EnrollType enroll_type_from_string(const char *s);
-
-const char* luks2_token_type_to_string(EnrollType t);
-EnrollType luks2_token_type_from_string(const char *s);
+DECLARE_STRING_TABLE_LOOKUP(enroll_type, EnrollType);
+DECLARE_STRING_TABLE_LOOKUP(luks2_token_type, EnrollType);
