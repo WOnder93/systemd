@@ -3717,17 +3717,13 @@ static int inner_child(
 
                 exec_target = "/usr/lib/systemd/systemd, /lib/systemd/systemd, /sbin/init";
         } else if (!strv_isempty(arg_parameters)) {
-                const char *dollar_path;
-
                 exec_target = arg_parameters[0];
 
-                /* Use the user supplied search $PATH if there is one, or DEFAULT_PATH_COMPAT if not to search the
-                 * binary. */
-                dollar_path = strv_env_get(env_use, "PATH");
-                if (dollar_path) {
-                        if (setenv("PATH", dollar_path, 1) < 0)
-                                return log_error_errno(errno, "Failed to update $PATH: %m");
-                }
+                /* Use the search $PATH from env_use to search the binary. It will be set to the
+                 * user-supplied PATH or DEFAULT_PATH_COMPAT if none was supplied. In both cases
+                 * we need to set PATH explicitly so that the host's PATH isn't used. */
+                if (setenv("PATH", strv_env_get(env_use, "PATH"), 1) < 0)
+                        return log_error_errno(errno, "Failed to update $PATH: %m");
 
                 execvpe(arg_parameters[0], arg_parameters, env_use);
         } else {
