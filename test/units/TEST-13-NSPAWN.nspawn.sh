@@ -226,6 +226,27 @@ EOF
     # Backward compat: --user NAME (space-separated) and --user=testuser should still work
     systemd-nspawn --register=no --directory="$root" --user testuser bash -xec '[[ $USER == testuser ]]'
     systemd-nspawn --register=no --directory="$root" --user=testuser bash -xec '[[ $USER == testuser ]]'
+    # Make sure that host PATH doesn't affect getent invocation
+    PATH=/dummy "$(command -v systemd-nspawn)" --register=no --directory="$root" --user=testuser bash -xec '[[ $USER == testuser ]]'
+    # The user-specified PATH shouldn't affect it either
+    systemd-nspawn --register=no --directory="$root" --user=testuser --setenv PATH=/dummy /bin/bash -xec '[[ $USER == testuser ]]'
+    # Check for unexpected env leak into getent
+    cat >"$root/bin/getent" <<\EOF
+#!/usr/bin/env bash
+
+if [ -n "$SECRET" ]; then
+    exit 1
+fi
+
+if [[ $# -eq 0 ]]; then
+    :
+elif [[ $1 == passwd ]]; then
+    echo "testuser:x:1000:1000:testuser:/:/bin/sh"
+elif [[ $1 == initgroups ]]; then
+    echo "testuser"
+fi
+EOF
+    SECRET=nbusr123 systemd-nspawn --register=no --directory="$root" --user=testuser bash -xec '[[ $USER == testuser ]]'
 
     # --settings= + .nspawn files
     mkdir -p /run/systemd/nspawn/
