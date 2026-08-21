@@ -11,7 +11,6 @@
 #include "log.h"
 #include "mkdir.h"
 #include "nspawn-setuid.h"
-#include "path-util.h"
 #include "pidref.h"
 #include "process-util.h"
 #include "string-util.h"
@@ -39,12 +38,7 @@ static int spawn_getent(const char *database, const char *key, PidRef *ret) {
                 return r;
         }
         if (r == 0) {
-                /* Use DEFAULT_PATH_COMPAT to search the binary, since we don't want to use the host's PATH
-                 * in the container. Also run it with an empty environment to prevent host environment from
-                 * leaking into the container. */
-                if (setenv("PATH", DEFAULT_PATH_COMPAT, 1) < 0)
-                        return log_error_errno(errno, "Failed to update $PATH: %m");
-                execle("getent", "getent", database, key, NULL, &(char*[1]){});
+                execlp("getent", "getent", database, key, NULL);
                 _exit(EXIT_FAILURE);
         }
 
