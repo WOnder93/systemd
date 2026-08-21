@@ -3,14 +3,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
 name: Build test
-on:
-  pull_request:
-    paths:
-      - '**/meson.build'
-      - '.github/workflows/**'
-      - 'meson_options.txt'
-      - 'src/**'
-      - 'test/fuzz/**'
+on: [push]
 
 permissions:
   contents: read
